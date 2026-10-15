@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Coverage / profiling artifacts
+*.profraw
+lcov.info
+coverage/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# User-provided content — NEVER commit copyrighted material you do not own.
+# PDG does not distribute BIOS, firmware, or game files.
+*.bios
+*.rom
+*.pup
+*.pkg
+*.self
+/bios/
+/roms/
+/games/
+/isos/
+
+# Local (machine-specific) configuration
+/config/local.toml

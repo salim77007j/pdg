@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+members = [
+    "pdg-core",
+    "pdg-cpu",
+    "pdg-gpu",
+    "pdg-memory",
+    "pdg-io",
+    "pdg-audio",
+    "pdg-kernel",
+    "pdg-frontend",
+    "pdg-tests",
+    "pdg-tools",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/salim77007j/pdg"
+homepage = "https://github.com/salim77007j/pdg"
+keywords = ["emulator", "ps5", "playstation", "systems-programming"]
+categories = ["emulators"]
+
+[workspace.dependencies]
+# Internal crates
+pdg-core = { path = "pdg-core", version = "0.1.0" }
+pdg-cpu = { path = "pdg-cpu", version = "0.1.0" }
+pdg-memory = { path = "pdg-memory", version = "0.1.0" }
+pdg-io = { path = "pdg-io", version = "0.1.0" }
+pdg-kernel = { path = "pdg-kernel", version = "0.1.0" }
+
+# Third-party crates (see PHASE_1_REPORT.md for rationale)
+anyhow = "1"
+bitflags = "2"
+clap = { version = "4", features = ["derive"] }
+criterion = "0.5"
+iced-x86 = "1"
+memmap2 = "0.9"
+proptest = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,0 +1,44 @@
+# PDG example configuration.
+# Copy to `config/local.toml` (git-ignored) and adjust to taste.
+# All values shown here are the built-in defaults.
+
+[core]
+# tracing log level: "error" | "warn" | "info" | "debug" | "trace"
+# The RUST_LOG environment variable takes precedence when set.
+log_level = "info"
+
+[cpu]
+# PS5 CPU: AMD Zen 2, 8 cores / 16 threads @ ~3.5 GHz.
+cores = 8
+threads = 16
+# Phase 1 executes a single vCPU; SMP scheduling lands in Phase 2.
+freq_hz = 3500000000
+
+[memory]
+# Emulated unified memory size in MiB.
+# The PS5 has 16 GiB of GDDR6; lower values keep host commit charge sane
+# during development. Production presets will raise this.
+ram_mib = 256
+# MMIO window of the boot console device.
+console_mmio_base = 0xF0000000
+# Default load address for raw boot images.
+image_base = 0x100000
+# Bootstrap page-table zone (guest-physical addresses).
+pml4_base = 0x200000
+page_frame_alloc_base = 0x210000
+
+[boot]
+# Initial RSP. Must lie inside mapped RAM.
+stack_top = 0x0FFF_F000
+# Safety cap on interpreted instructions per run().
+max_instructions = 50000000
+
+[gpu]
+# "auto" | "vulkan" | "dx12" | "metal" | "gl"
+# Wired up when the wgpu backend lands (Phase 3).
+backend = "auto"
+
+[audio]
+# Tempest audio stand-in parameters (cpal output lands in Phase 4).
+sample_rate = 48000
+channels = 2

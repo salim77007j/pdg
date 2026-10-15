@@ -1,0 +1,24 @@
+[package]
+name = "pdg-cpu"
+description = "PDG CPU subsystem: AMD Zen 2 (x86-64) register model, decode pipeline and interpreter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+iced-x86.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "interp"
+harness = false

@@ -1,0 +1,20 @@
+[package]
+name = "pdg-kernel"
+description = "PDG kernel subsystem: HLE syscall dispatch framework and exception vector constants (Orbis table lands in Phase 5)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pdg-cpu.workspace = true
+iced-x86.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

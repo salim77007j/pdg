@@ -1,0 +1,26 @@
+[package]
+name = "pdg-tools"
+description = "PDG developer tools: pdg-boot (boot harness) and pdg-disasm (x86-64 disassembler)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pdg-core.workspace = true
+pdg-cpu.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+
+[[bin]]
+name = "pdg-boot"
+path = "src/bin/pdg-boot.rs"
+
+[[bin]]
+name = "pdg-disasm"
+path = "src/bin/pdg-disasm.rs"
