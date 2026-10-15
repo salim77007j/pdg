@@ -77,7 +77,7 @@ pub fn is_canonical(va: u64) -> bool {
 /// from `frame_alloc_base` upward; anonymous guest RAM is zero-filled, so
 /// absent entries read as "not present" as required.
 pub struct PageTableBuilder<'a> {
-    bus: &'a mut Bus,
+    bus: &'a Bus,
     pml4_base: u64,
     next_frame: u64,
 }
@@ -85,7 +85,7 @@ pub struct PageTableBuilder<'a> {
 impl<'a> PageTableBuilder<'a> {
     /// Create a builder rooted at `pml4_base`, allocating intermediate table
     /// frames from `frame_alloc_base` upward.
-    pub fn new(bus: &'a mut Bus, pml4_base: u64, frame_alloc_base: u64) -> Self {
+    pub fn new(bus: &'a Bus, pml4_base: u64, frame_alloc_base: u64) -> Self {
         Self {
             bus,
             pml4_base,

@@ -48,6 +48,9 @@ pub struct GuestMemory {
     pub bus: Bus,
     /// Page-table walker rooted at the bootstrap CR3.
     pub mmu: Mmu,
+    /// Bumped on every translation change (CR3 reload, INVLPG, flush) so
+    /// translation caches (the JIT's env TLB) can validate cheaply.
+    pub epoch: u64,
 }
 
 impl std::fmt::Debug for GuestMemory {
@@ -59,7 +62,7 @@ impl std::fmt::Debug for GuestMemory {
     }
 }
 
-fn map_fault(e: AccessFault) -> AccessError {
+pub(crate) fn map_fault(e: AccessFault) -> AccessError {
     match e {
         AccessFault::PageFault { addr, code } => AccessError::PageFault { addr, code },
         AccessFault::NonCanonical { addr } => {
@@ -79,9 +82,7 @@ impl MemoryAccess for GuestMemory {
     fn write(&mut self, width: u8, addr: u64, value: u64) -> Result<(), AccessError> {
         let w = AccessWidth::from_size(width)
             .ok_or_else(|| AccessError::Host(format!("bad access width {width}")))?;
-        self.mmu
-            .write(&mut self.bus, w, addr, value)
-            .map_err(map_fault)
+        self.mmu.write(&self.bus, w, addr, value).map_err(map_fault)
     }
 
     fn fetch(&mut self, addr: u64, out: &mut [u8]) -> Result<usize, AccessError> {
@@ -141,6 +142,81 @@ impl MemoryAccess for GuestMemory {
         }
         Ok(())
     }
+
+    // Translation-change hooks: route to the MMU and bump the epoch so
+    // translation caches (the JIT's env TLB) can invalidate precisely.
+    // (Not overriding these was a latent bug: `MOV CR3`/`INVLPG` through
+    // the single-vCPU path used to leave a stale MMU TLB behind.)
+    fn invalidate_tlb_page(&mut self, va: u64) {
+        self.mmu.invlpg(va);
+        self.epoch += 1;
+    }
+
+    fn invalidate_tlb_all(&mut self) {
+        self.mmu.flush_tlb();
+        self.epoch += 1;
+    }
+
+    fn reload_cr3(&mut self, cr3: u64) {
+        self.mmu.set_cr3(cr3);
+        self.epoch += 1;
+    }
+
+    fn translation_epoch(&mut self) -> u64 {
+        self.epoch
+    }
+}
+
+/// Install the shared bootstrap address space on `bus`:
+///
+/// * first 2 MiB — executable boot region (images load here);
+/// * remaining RAM — read/write, non-executable;
+/// * console + IPI MMIO windows — identity-mapped RW/NX;
+/// * ROM window — read-only, final 2 MiB executable for the reset vector.
+///
+/// Both the single-vCPU [`System`] and the SMP machine build on this, so
+/// every core of every machine boots into the same layout.
+pub(crate) fn install_bootstrap(bus: &Bus, cfg: &PdgConfig) -> anyhow::Result<()> {
+    let ram = u64::from(cfg.memory.ram_mib) * 1024 * 1024;
+    let m2: u64 = 2 * 1024 * 1024;
+    let mut pt = PageTableBuilder::new(bus, cfg.memory.pml4_base, cfg.memory.page_frame_alloc_base);
+    // First 2 MiB: executable boot region (boot images live here).
+    pt.map_2m(0, 0, PageFlags::PRESENT | PageFlags::RW)?;
+    // Remaining RAM: read/write, non-executable.
+    let mut base = m2;
+    while base < ram {
+        pt.map_2m(
+            base,
+            base,
+            PageFlags::PRESENT | PageFlags::RW | PageFlags::NX,
+        )?;
+        base += m2;
+    }
+    // Device MMIO windows (identity-mapped, RW/NX). The console and the
+    // IPI device usually share one 2 MiB leaf — map it only once.
+    let console_page = cfg.memory.console_mmio_base & !(m2 - 1);
+    let ipi_page = cfg.memory.ipi_mmio_base & !(m2 - 1);
+    pt.map_2m(
+        console_page,
+        console_page,
+        PageFlags::PRESENT | PageFlags::RW | PageFlags::NX,
+    )?;
+    if ipi_page != console_page {
+        pt.map_2m(
+            ipi_page,
+            ipi_page,
+            PageFlags::PRESENT | PageFlags::RW | PageFlags::NX,
+        )?;
+    }
+    // ROM window: read-only; the final 2 MiB stays executable so the
+    // reset vector (0xFFFF_FFF0) can run.
+    let mut rom = ROM_BASE;
+    while rom < ROM_BASE + ROM_SIZE - m2 {
+        pt.map_2m(rom, rom, PageFlags::PRESENT | PageFlags::NX)?;
+        rom += m2;
+    }
+    pt.map_2m(rom, rom, PageFlags::PRESENT)?;
+    Ok(())
 }
 
 /// Result of a `System::run`.
@@ -176,51 +252,20 @@ impl System {
     pub fn new(config: PdgConfig) -> anyhow::Result<Self> {
         config.validate()?;
         let ram = u64::from(config.memory.ram_mib) * 1024 * 1024;
-        let m2 = 2 * 1024 * 1024;
 
         let mut bus = Bus::new(ram as usize)?;
         let console = Arc::new(ConsoleDevice::new());
         bus.attach_mmio(config.memory.console_mmio_base, 0x1000, console.clone());
 
-        // Bootstrap page tables: genuine x86-64 structures in guest RAM.
-        {
-            let mut pt = PageTableBuilder::new(
-                &mut bus,
-                config.memory.pml4_base,
-                config.memory.page_frame_alloc_base,
-            );
-            // First 2 MiB: executable boot region (boot image lives here).
-            pt.map_2m(0, 0, PageFlags::PRESENT | PageFlags::RW)?;
-            // Remaining RAM: read/write, non-executable.
-            let mut base = m2;
-            while base < ram {
-                pt.map_2m(
-                    base,
-                    base,
-                    PageFlags::PRESENT | PageFlags::RW | PageFlags::NX,
-                )?;
-                base += m2;
-            }
-            // Console MMIO window (identity-mapped).
-            pt.map_2m(
-                config.memory.console_mmio_base,
-                config.memory.console_mmio_base,
-                PageFlags::PRESENT | PageFlags::RW | PageFlags::NX,
-            )?;
-            // ROM window: read-only; the final 2 MiB stays executable so the
-            // reset vector (0xFFFF_FFF0) can run.
-            let mut rom = ROM_BASE;
-            while rom < ROM_BASE + ROM_SIZE - m2 {
-                pt.map_2m(rom, rom, PageFlags::PRESENT | PageFlags::NX)?;
-                rom += m2;
-            }
-            pt.map_2m(rom, rom, PageFlags::PRESENT)?;
-        }
+        // Bootstrap page tables: genuine x86-64 structures in guest RAM
+        // (shared with the SMP machine — see `install_bootstrap`).
+        install_bootstrap(&bus, &config)?;
 
         Ok(Self {
             mem: GuestMemory {
                 bus,
                 mmu: Mmu::new(config.memory.pml4_base),
+                epoch: 0,
             },
             cpu: Interpreter::new(CpuState::default()),
             console,

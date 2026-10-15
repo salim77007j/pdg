@@ -120,6 +120,14 @@ impl Mmu {
         self.tlb.clear();
     }
 
+    /// `INVLPG` — invalidate the cached translation of the 4 KiB slot
+    /// containing `va`. Our TLB keys on 4 KiB slots, so this drops exactly
+    /// the one slot; other slots mapping the same 2 MiB leaf re-walk (the
+    /// conservative-but-correct behaviour the Phase-1 TLB already had).
+    pub fn invlpg(&mut self, va: u64) {
+        self.tlb.remove(&(va >> 12));
+    }
+
     /// Enable/disable the software TLB (used for benchmarking the walk cost).
     pub fn set_tlb_enabled(&mut self, enabled: bool) {
         self.tlb_enabled = enabled;
@@ -245,9 +253,12 @@ impl Mmu {
     }
 
     /// Write `width` bytes at virtual `va`.
+    ///
+    /// Takes `&Bus` since Phase 2 (RAM writes are `&self` on the bus), which
+    /// lets every vCPU in an SMP machine share one bus.
     pub fn write(
         &mut self,
-        bus: &mut Bus,
+        bus: &Bus,
         width: AccessWidth,
         va: u64,
         value: u64,
@@ -263,7 +274,7 @@ impl Mmu {
     }
 
     /// Copy `src.len()` bytes to virtual `va` (write side of `write_buf`).
-    pub fn write_chunk(&mut self, bus: &mut Bus, va: u64, src: &[u8]) -> Result<(), AccessFault> {
+    pub fn write_chunk(&mut self, bus: &Bus, va: u64, src: &[u8]) -> Result<(), AccessFault> {
         let pa = self.translate(bus, va, AccessKind::Write)?;
         bus.write_buf(pa, src).map_err(AccessFault::Bus)
     }
@@ -277,8 +288,8 @@ mod tests {
     /// 4 MiB RAM, PML4 at 0x1000, first two 2 MiB pages identity-mapped,
     /// fresh table frames from 0x100_000.
     fn fixture() -> (Bus, Mmu) {
-        let mut bus = Bus::new(0x40_0000).unwrap();
-        let mut builder = PageTableBuilder::new(&mut bus, 0x1000, 0x100_000);
+        let bus = Bus::new(0x40_0000).unwrap();
+        let mut builder = PageTableBuilder::new(&bus, 0x1000, 0x100_000);
         builder
             .map_2m(0, 0, PageFlags::PRESENT | PageFlags::RW | PageFlags::NX)
             .unwrap();
@@ -294,8 +305,8 @@ mod tests {
 
     #[test]
     fn identity_map_translates() {
-        let (mut bus, mut mmu) = fixture();
-        mmu.write(&mut bus, AccessWidth::W32, 0x30_0100, 0xC0FF_EE42)
+        let (bus, mut mmu) = fixture();
+        mmu.write(&bus, AccessWidth::W32, 0x30_0100, 0xC0FF_EE42)
             .unwrap();
         assert_eq!(
             mmu.read(&bus, AccessWidth::W32, 0x30_0100).unwrap(),
@@ -307,8 +318,8 @@ mod tests {
 
     #[test]
     fn remapped_page_translates_to_target() {
-        let (mut bus, mut mmu) = fixture();
-        let mut builder = PageTableBuilder::new(&mut bus, 0x1000, 0x200_000);
+        let (bus, mut mmu) = fixture();
+        let mut builder = PageTableBuilder::new(&bus, 0x1000, 0x200_000);
         // Map VA page 0x40_0000 → PA page 0x30_0000.
         builder
             .map_4k(
@@ -323,15 +334,13 @@ mod tests {
 
     #[test]
     fn read_only_page_faults_on_write() {
-        let (mut bus, mut mmu) = fixture();
-        let mut builder = PageTableBuilder::new(&mut bus, 0x1000, 0x200_000);
+        let (bus, mut mmu) = fixture();
+        let mut builder = PageTableBuilder::new(&bus, 0x1000, 0x200_000);
         // VA page 0x60_0000 → PA page 0x30_0000, read-only.
         builder
             .map_4k(0x60_0000, 0x30_0000, PageFlags::PRESENT | PageFlags::NX)
             .unwrap();
-        let fault = mmu
-            .write(&mut bus, AccessWidth::W8, 0x60_0010, 1)
-            .unwrap_err();
+        let fault = mmu.write(&bus, AccessWidth::W8, 0x60_0010, 1).unwrap_err();
         assert_eq!(
             fault,
             AccessFault::PageFault {
@@ -385,8 +394,8 @@ mod tests {
 
     #[test]
     fn tlb_cache_and_flush() {
-        let (mut bus, mut mmu) = fixture();
-        let mut builder = PageTableBuilder::new(&mut bus, 0x1000, 0x200_000);
+        let (bus, mut mmu) = fixture();
+        let mut builder = PageTableBuilder::new(&bus, 0x1000, 0x200_000);
         builder
             .map_4k(
                 0x40_0000,
@@ -418,8 +427,26 @@ mod tests {
     }
 
     #[test]
+    fn invlpg_drops_exactly_one_slot() {
+        let (bus, mut mmu) = fixture();
+        // Warm two slots.
+        assert_eq!(mmu.read(&bus, AccessWidth::W64, 0x0).unwrap(), 0);
+        assert_eq!(mmu.read(&bus, AccessWidth::W64, 0x30_0000).unwrap(), 0);
+        assert_eq!(mmu.tlb.len(), 2);
+        // INVLPG one of them.
+        mmu.invlpg(0x30_0123);
+        assert_eq!(mmu.tlb.len(), 1);
+        assert!(mmu.tlb.contains_key(&(0 >> 12)));
+        // The other slot still hits without a re-walk.
+        assert_eq!(mmu.read(&bus, AccessWidth::W64, 0x0).unwrap(), 0);
+        // INVLPG of an unmapped slot is a no-op.
+        mmu.invlpg(0x7777_0000);
+        assert_eq!(mmu.tlb.len(), 1);
+    }
+
+    #[test]
     fn cr3_with_empty_tables_faults() {
-        let mut bus = Bus::new(0x10_0000).unwrap();
+        let bus = Bus::new(0x10_0000).unwrap();
         bus.write(AccessWidth::W64, 0x1000, 0).unwrap(); // PML4[0] = not present
         let mut mmu = Mmu::new(0x1000);
         assert_eq!(

@@ -7,6 +7,7 @@ members = [
     "pdg-memory",
     "pdg-io",
     "pdg-audio",
+    "pdg-jit",
     "pdg-kernel",
     "pdg-frontend",
     "pdg-tests",
@@ -30,12 +31,18 @@ pdg-cpu = { path = "pdg-cpu", version = "0.1.0" }
 pdg-memory = { path = "pdg-memory", version = "0.1.0" }
 pdg-io = { path = "pdg-io", version = "0.1.0" }
 pdg-kernel = { path = "pdg-kernel", version = "0.1.0" }
+pdg-jit = { path = "pdg-jit", version = "0.1.0" }
 
 # Third-party crates (see PHASE_1_REPORT.md for rationale)
 anyhow = "1"
 bitflags = "2"
 clap = { version = "4", features = ["derive"] }
 criterion = "0.5"
+cranelift-codegen = "0.136"
+cranelift-frontend = "0.136"
+cranelift-jit = "0.136"
+cranelift-module = "0.136"
+cranelift-native = "0.136"
 iced-x86 = "1"
 memmap2 = "0.9"
 proptest = "1"

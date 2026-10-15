@@ -23,10 +23,12 @@
 //! interpreter treats every unimplemented instruction as an architectural
 //! `#UD` fault, never as a silent no-op.
 
+pub mod cpuid;
 pub mod fault;
 pub mod flat;
 pub mod hooks;
 pub mod interpreter;
+pub mod simd;
 pub mod state;
 
 pub use fault::{AccessError, Fault, MemoryAccess};

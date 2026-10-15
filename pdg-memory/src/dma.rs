@@ -38,7 +38,7 @@ impl DmaEngine {
     /// completion record.
     pub fn submit(
         &mut self,
-        bus: &mut Bus,
+        bus: &Bus,
         src: u64,
         dst: u64,
         len: u64,
@@ -88,10 +88,10 @@ mod tests {
 
     #[test]
     fn dma_copies_within_ram() {
-        let mut bus = Bus::new(0x10_0000).unwrap();
+        let bus = Bus::new(0x10_0000).unwrap();
         bus.write_buf(0x1000, b"hello, dma world!").unwrap();
         let mut dma = DmaEngine::new();
-        let rec = dma.submit(&mut bus, 0x1000, 0x2000, 17).unwrap();
+        let rec = dma.submit(&bus, 0x1000, 0x2000, 17).unwrap();
         let mut out = [0u8; 17];
         bus.read_buf(0x2000, &mut out).unwrap();
         assert_eq!(&out, b"hello, dma world!");
@@ -108,7 +108,7 @@ mod tests {
         bus.attach_mmio(0x100, 0x20, Arc::new(ConsoleDevice::new()));
         bus.write_buf(0xF8, b"01234567").unwrap();
         let mut dma = DmaEngine::new();
-        dma.submit(&mut bus, 0xF8, 0x40, 16).unwrap();
+        dma.submit(&bus, 0xF8, 0x40, 16).unwrap();
         let mut out = [0u8; 16];
         bus.read_buf(0x40, &mut out).unwrap();
         assert_eq!(&out[..8], b"01234567"); // from RAM
@@ -117,10 +117,10 @@ mod tests {
 
     #[test]
     fn dma_rejects_unmapped_source() {
-        let mut bus = Bus::new(0x1000).unwrap();
+        let bus = Bus::new(0x1000).unwrap();
         let mut dma = DmaEngine::new();
         assert!(matches!(
-            dma.submit(&mut bus, 0x9000, 0x100, 8),
+            dma.submit(&bus, 0x9000, 0x100, 8),
             Err(MemoryError::UnmappedPhysical { .. })
         ));
     }

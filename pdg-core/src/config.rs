@@ -69,6 +69,8 @@ pub struct MemoryConfig {
     pub ram_mib: u32,
     /// MMIO base of the boot console device.
     pub console_mmio_base: u64,
+    /// MMIO base of the inter-processor interrupt (IPI) device (SMP).
+    pub ipi_mmio_base: u64,
     /// Default load address for raw boot images.
     pub image_base: u64,
     /// Guest-physical address of the bootstrap PML4.
@@ -82,6 +84,7 @@ impl Default for MemoryConfig {
         Self {
             ram_mib: 256,
             console_mmio_base: 0xF000_0000,
+            ipi_mmio_base: 0xF000_1000,
             image_base: 0x0010_0000,
             pml4_base: 0x0020_0000,
             page_frame_alloc_base: 0x0021_0000,
@@ -221,6 +224,25 @@ impl PdgConfig {
                 ram
             );
         }
+        if m.ipi_mmio_base & 0xFFF != 0 {
+            anyhow::bail!(
+                "memory.ipi_mmio_base ({:#x}) must be 4 KiB-aligned",
+                m.ipi_mmio_base
+            );
+        }
+        if m.ipi_mmio_base <= ram {
+            anyhow::bail!(
+                "memory.ipi_mmio_base ({:#x}) must sit above RAM ({:#x}) to avoid aliasing",
+                m.ipi_mmio_base,
+                ram
+            );
+        }
+        if m.ipi_mmio_base >> 12 == m.console_mmio_base >> 12 {
+            anyhow::bail!(
+                "memory.ipi_mmio_base ({:#x}) must not share the boot console's 4 KiB page",
+                m.ipi_mmio_base
+            );
+        }
         if self.cpu.threads < self.cpu.cores {
             anyhow::bail!(
                 "cpu.threads ({}) must be >= cpu.cores ({})",
@@ -266,6 +288,10 @@ mod tests {
 
         let mut cfg = PdgConfig::default();
         cfg.boot.stack_top = u64::MAX;
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = PdgConfig::default();
+        cfg.memory.ipi_mmio_base = 0xF000_0800; // shares the console's page
         assert!(cfg.validate().is_err());
     }
 

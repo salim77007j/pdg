@@ -28,8 +28,8 @@ pub mod mmu;
 pub mod page_table;
 pub mod physical;
 
-pub use bus::{AccessWidth, Bus, MmioDevice, RomRegion};
-pub use devices::ConsoleDevice;
+pub use bus::{AccessWidth, AtomicRmw, Bus, MmioDevice, RomRegion};
+pub use devices::{ConsoleDevice, IpiDevice, IpiHub};
 pub use dma::{DmaEngine, DmaRecord};
 pub use error::MemoryError;
 pub use mmu::{AccessFault, AccessKind, Mmu};

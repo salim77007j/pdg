@@ -16,6 +16,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+aes = "0.8"
 proptest.workspace = true
 criterion.workspace = true
 

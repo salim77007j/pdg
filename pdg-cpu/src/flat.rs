@@ -42,6 +42,27 @@ impl FlatMemory {
 }
 
 impl MemoryAccess for FlatMemory {
+    /// Identity host pointer for the 4 KiB page containing `va`: the JIT
+    /// and the differential fuzzers run at full speed against flat images.
+    fn page_ptr(
+        &mut self,
+        va: u64,
+        write: bool,
+    ) -> Result<Option<std::ptr::NonNull<u8>>, AccessError> {
+        // Flat images are always writable.
+        let _ = write;
+        let page = va & !0xFFF;
+        if page + 0x1000 <= self.data.len() as u64 {
+            // SAFETY: the pointer stays inside the Vec for the page window;
+            // the Vec is never reallocated once loaded (load() may grow it
+            // only before execution starts).
+            let ptr = unsafe { self.data.as_mut_ptr().add(page as usize) };
+            Ok(std::ptr::NonNull::new(ptr))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn read(&mut self, width: u8, addr: u64) -> Result<u64, AccessError> {
         let off = addr as usize;
         let end = off.checked_add(width as usize);

@@ -6,10 +6,12 @@
 //! established HLE strategy: translate guest syscalls to host operations
 //! instead of emulating the kernel binary.
 //!
-//! Phase 1 delivers the dispatch framework:
+//! Phase 1 delivers the dispatch framework; Phase 2 adds the IDT helpers:
 //!
 //! * [`exception`] — x86-64 architectural vector numbers used when faults
 //!   graduate from "reported" to "delivered through the guest IDT" (Phase 2).
+//! * [`idt`] — encode/decode helpers for genuine x86-64 IDT gates, used by
+//!   the Phase-2 exception-delivery path and the Phase-5 kernel.
 //! * [`syscall`] — a registry-based [`SyscallDispatcher`] implementing
 //!   [`pdg_cpu::SyscallHook`], with the FreeBSD-style calling convention
 //!   (number in RAX, arguments in RDI/RSI/RDX/R10/R8/R9, result in RAX).
@@ -19,7 +21,9 @@
 //! vendor constants.
 
 pub mod exception;
+pub mod idt;
 pub mod syscall;
 
 pub use exception::vector;
+pub use idt::{ATTR_INTERRUPT_GATE, ATTR_TRAP_GATE, IdtGate};
 pub use syscall::{KernelError, SyscallDispatcher, SyscallNumber};

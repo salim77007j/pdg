@@ -11,7 +11,7 @@ log_level = "info"
 # PS5 CPU: AMD Zen 2, 8 cores / 16 threads @ ~3.5 GHz.
 cores = 8
 threads = 16
-# Phase 1 executes a single vCPU; SMP scheduling lands in Phase 2.
+# Each logical thread runs on its own host thread (SmpSystem, Phase 2).
 freq_hz = 3500000000
 
 [memory]
@@ -21,6 +21,8 @@ freq_hz = 3500000000
 ram_mib = 256
 # MMIO window of the boot console device.
 console_mmio_base = 0xF0000000
+# MMIO window of the inter-processor interrupt (IPI) device (SMP).
+ipi_mmio_base = 0xF0001000
 # Default load address for raw boot images.
 image_base = 0x100000
 # Bootstrap page-table zone (guest-physical addresses).

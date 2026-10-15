@@ -1,5 +1,7 @@
 //! Faults and the memory-access port.
 
+use std::ptr::NonNull;
+
 use thiserror::Error;
 
 /// Guest-visible architectural fault raised during execution.
@@ -103,4 +105,74 @@ pub trait MemoryAccess {
 
     /// Copy exactly `src.len()` bytes into memory.
     fn write_buf(&mut self, addr: u64, src: &[u8]) -> Result<(), AccessError>;
+
+    /// Translate the 4 KiB guest page containing `va` to a host pointer to
+    /// that page's base, for the JIT's direct-access fast path. `Ok(None)`
+    /// means the page is real but not directly host-addressable (MMIO/ROM);
+    /// `Err` is an architectural fault from the translation itself.
+    ///
+    /// The default (no host window) forces the JIT onto its slow helper
+    /// path, which keeps simple backends correct.
+    fn page_ptr(&mut self, va: u64, write: bool) -> Result<Option<NonNull<u8>>, AccessError> {
+        let _ = (va, write);
+        Ok(None)
+    }
+
+    /// Atomic exchange: store `value`, return the old value.
+    ///
+    /// The default is a plain read-modify-write (correct for a backend used
+    /// by a single vCPU); backends sharing RAM across vCPUs override it with
+    /// real atomicity.
+    fn xchg(&mut self, width: u8, addr: u64, value: u64) -> Result<u64, AccessError> {
+        let old = self.read(width, addr)?;
+        self.write(width, addr, value)?;
+        Ok(old)
+    }
+
+    /// Atomic add: add `value`, return the old value.
+    fn xadd(&mut self, width: u8, addr: u64, value: u64) -> Result<u64, AccessError> {
+        let old = self.read(width, addr)?;
+        self.write(width, addr, old.wrapping_add(value))?;
+        Ok(old)
+    }
+
+    /// Atomic compare-and-exchange: if the current value equals `expected`,
+    /// store `new`. Returns the old value either way (the caller sets ZF by
+    /// comparing it against `expected`).
+    fn cmpxchg(
+        &mut self,
+        width: u8,
+        addr: u64,
+        expected: u64,
+        new: u64,
+    ) -> Result<u64, AccessError> {
+        let old = self.read(width, addr)?;
+        if old == expected {
+            self.write(width, addr, new)?;
+        }
+        Ok(old)
+    }
+
+    /// `INVLPG` hook: drop the cached translation of the 4 KiB slot
+    /// containing `va` (no-op for backends without a TLB).
+    fn invalidate_tlb_page(&mut self, va: u64) {
+        let _ = va;
+    }
+
+    /// TLB-flush hook (e.g. `MOV CR3`): drop all cached translations.
+    fn invalidate_tlb_all(&mut self) {}
+
+    /// `MOV CR3` hook: install a new page-table root (and flush caches).
+    fn reload_cr3(&mut self, cr3: u64) {
+        let _ = cr3;
+    }
+
+    /// Monotonic counter bumped whenever cached translations may have
+    /// changed (CR3 reload, INVLPG, full flush). Consumers that cache
+    /// translations — the JIT's env TLB — compare it between uses instead
+    /// of flushing unconditionally. The default (a constant) suits
+    /// backends without translation state, e.g. flat memory.
+    fn translation_epoch(&mut self) -> u64 {
+        0
+    }
 }

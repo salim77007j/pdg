@@ -77,18 +77,24 @@ One host thread per emulated core (8 cores / 16 SMT threads), with
 cooperative scheduling gates for cross-core events (IPIs, global TLB
 shootdowns). Synchronization primitives used by real games — atomics, lock
 cmpxchg, futex-style waits — execute natively on the host where legal, and
-via a scheduler-aware path when a guest thread must block. Phase 1 runs a
-single vCPU; the data model (register file, faults, memory port) is already
-per-core-shaped.
+via a scheduler-aware path when a guest thread must block. Phase 2
+delivered the shape: `SmpSystem` runs every logical core on its own host
+thread with a per-core MMU/TLB over one shared bus, hardware atomics for
+LOCK-prefixed RMWs, and a guest-visible IPI MMIO device mirrored onto the
+event bus. SMT (two threads per core) and scheduler-aware blocking remain
+future work.
 
 ### 3.3 Memory ordering and exceptions
 
-- Faults (page fault with CR2 + error code, #UD, #GP, #DE) surface through
-  a typed `Fault` enum today; Phase 2 delivers them through the guest IDT
-  (`pdg-kernel::exception` already defines the architectural vectors).
-- Self-modifying code: Phase 2 write-protects code pages at the host level
-  and invalidates block caches on write faults (interpreter) or via page
-  guards (JIT).
+- Faults (page fault with CR2 + error code, #UD, #GP, #DE) deliver
+  through the guest IDT with architectural frames and `IRET` (Phase 2);
+  the JIT reproduces them precisely by re-executing the faulting
+  instruction in the interpreter tier.
+- Self-modifying code: the JIT guards stores with a code-page bloom and
+  invalidates the affected blocks before re-executing the store through
+  the interpreter (Phase 2, tested differentially). Guest page-table
+  writes through the JIT's host window are the remaining hole —
+  write-protected page tables land with the kernel phase.
 - SIMD: AVX2 maps to host AVX2 when present (nearly universal on 2026
   desktops); a soft-fallback covers hosts without it.
 

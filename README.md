@@ -27,25 +27,27 @@ Emulators are legal tools (established precedent: *Sony v. Connectix*, 2000; *So
 
 If you do not own a PS5 and the games you dump, you may not use PDG to run them. piracy is neither endorsed nor assisted here.
 
-## Status: Phase 1 of 6 (infrastructure)
+## Status: Phase 2 of 6 (CPU)
 
 | Phase | Scope | Status |
 |-------|-------|--------|
 | 1 | Foundation: workspace, core framework, memory subsystem, boot harness, CI | ✅ **complete** |
-| 2 | CPU: full x86-64 ISA, JIT recompiler, 8 cores/16 threads | ⏳ next |
-| 3 | GPU: PM4 command translation, RDNA 2 shader recompilation, wgpu backend | ⬜ |
+| 2 | CPU: full integer ISA, SSE→AVX2 SIMD, cranelift JIT, SMP (8 cores/16 threads) | ✅ **complete** |
+| 3 | GPU: PM4 command translation, RDNA 2 shader recompilation, wgpu backend | ⏳ next |
 | 4 | I/O: custom-SSD model, DualSense, Tempest audio, network | ⬜ |
 | 5 | Kernel: Orbis syscall translation, ELF/PRX loader, PFS | ⬜ |
 | 6 | Frontend: launcher GUI, optimization, release engineering | ⬜ |
 
-**PDG cannot run commercial PS5 games yet.** Phase 1 delivers the machine's foundation; see [PHASE_1_REPORT.md](PHASE_1_REPORT.md) for an honest, detailed account of exactly what works and what does not.
+**PDG cannot run commercial PS5 games yet.** Phase 2 delivers the emulated Zen 2 CPU — full instruction set, JIT tier, and 16-thread SMP — but the GPU, kernel, and I/O stacks are still ahead; see [PHASE_2_REPORT.md](PHASE_2_REPORT.md) for an honest, detailed account of exactly what works and what does not.
 
 ### What genuinely works today
 
+- **CPU interpreter (reference tier)** — the x86-64 integer ISA complete (MUL/DIV families, bit tests, string ops with REP/REPE/REPNE restart semantics, CMOVcc/SETcc, atomics with LOCK, CPUID/RDTSC/MSR, exceptions delivered through the guest IDT with architectural frames and IRET) plus SSE→SSE4.2 and the AVX2/FMA/AES-NI/PCLMULQDQ SIMD families with VEX upper-half zeroing rules — all verified instruction-by-instruction against the architecture manuals, including AES against FIPS-197 test vectors.
+- **CPU JIT (execution tier)** — cranelift recompilation of guest basic blocks with loop formation, an inline software TLB over host memory windows, precise fallback to the interpreter for anything tier-1 does not lift, self-modifying-code invalidation, and differential fuzzing against the interpreter oracle. Benchmarks: **~1.0 ns per instruction** on integer loops (≈**48×** the interpreter on ALU code, **76×** on load/store code, **6×** on call-heavy code).
+- **SMP** — `SmpSystem` runs all 16 logical cores as host threads over one shared bus, with per-core MMUs, real cross-core hardware atomics (`lock inc`/`xadd`/`cmpxchg` — zero lost updates, tested at 16 threads), and guest-visible IPIs through an MMIO device mirrored onto the host event bus.
 - **Memory subsystem** — real x86-64 four-level page-table walks (PML4→PDPT→PD→PT) over guest RAM, permission semantics (present/read-write/no-execute enforced at *every* level), a software TLB, an MMIO bus with devices, ROM windows, and a DMA engine that crosses region boundaries correctly.
-- **CPU core** — fetch → decode (iced-x86) → execute interpreter for the x86-64 integer heart: data movement, ALU with architecturally exact flags, shifts, stack, control flow, `syscall` hooks, `hlt`. Unimplemented instructions raise `#UD`; nothing silently no-ops.
 - **Boot harness** — `pdg-boot --bios <your-dump>` loads your legally-dumped firmware into the ROM window and starts executing at the reset vector `0xFFFF_FFF0` through the entire stack.
-- **Cross-cutting** — layered TOML configuration, `tracing` logging, event bus, virtual clock + scheduler, 93 tests, property-based ALU fuzzing, criterion benchmarks, CI on Linux and Windows.
+- **Cross-cutting** — layered TOML configuration, `tracing` logging, event bus, virtual clock + scheduler, **153 tests** (unit, integration, differential fuzz, SMP), criterion benchmarks, CI on Linux and Windows.
 
 ## Quick start
 
@@ -88,8 +90,9 @@ A minimal boot image that prints to the PDG MMIO console looks like this
 
 ```
 pdg/
-├── pdg-core/      # Config, logging, events, clocks, System orchestrator
-├── pdg-cpu/       # Zen 2 (x86-64) register model + interpreter
+├── pdg-core/      # Config, logging, events, clocks, System + SMP System orchestrators
+├── pdg-cpu/       # Zen 2 (x86-64) model: interpreter, full ISA + SIMD, CPUID
+├── pdg-jit/        # cranelift JIT tier: block lifting, inline TLB, SMC, fallback
 ├── pdg-gpu/       # RDNA 2 framework: device traits + PM4 framing
 ├── pdg-memory/    # Guest-physical bus, MMU, page tables, DMA
 ├── pdg-io/        # Host block devices, async I/O, input model
@@ -104,7 +107,7 @@ Architecture deep-dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Technology
 
-Rust (edition 2024) · iced-x86 (decoding) · memmap2 (guest RAM) · tokio (async I/O) · serde + toml (config) · tracing (logging) · criterion + proptest (QA). Phase 2 adds cranelift/dynasm (JIT); Phase 3 adds wgpu + naga (GPU). Rationale for every choice lives in the phase reports.
+Rust (edition 2024) · iced-x86 (decoding) · cranelift (JIT codegen, since Phase 2) · memmap2 (guest RAM) · tokio (async I/O) · serde + toml (config) · tracing (logging) · criterion + proptest (QA). Phase 3 adds wgpu + naga (GPU). Rationale for every choice lives in the phase reports.
 
 ## Contributing
 

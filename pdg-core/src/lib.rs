@@ -20,6 +20,7 @@ pub mod clock;
 pub mod config;
 pub mod events;
 pub mod logging;
+pub mod smp;
 pub mod system;
 
 pub use clock::{Clock, Scheduler};
@@ -28,4 +29,5 @@ pub use config::{
     PdgConfig,
 };
 pub use events::{Event, EventBus};
+pub use smp::{CoreReport, CoreSpec, SharedGuest, SmpSystem};
 pub use system::{BootReport, GuestMemory, RESET_VECTOR, ROM_BASE, System};

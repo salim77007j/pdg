@@ -41,6 +41,73 @@ pub mod rflags {
     pub const OF: u64 = 1 << 11;
 }
 
+/// Segment descriptor-table register (GDTR or IDTR): 16-bit limit + 64-bit
+/// base, as loaded/stored by `LGDT`/`LIDT`/`SGDT`/`SIDT` (10-byte memory
+/// operand in 64-bit mode).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DescriptorTableRegister {
+    /// Linear base of the table.
+    pub base: u64,
+    /// One less than the table length in bytes.
+    pub limit: u16,
+}
+
+/// MXCSR (SSE control/status) bit positions.
+pub mod mxcsr {
+    /// Invalid-operation flag.
+    pub const IE: u32 = 1 << 0;
+    /// Denormal flag.
+    pub const DE: u32 = 1 << 1;
+    /// Divide-by-zero flag.
+    pub const ZE: u32 = 1 << 2;
+    /// Overflow flag.
+    pub const OE: u32 = 1 << 3;
+    /// Underflow flag.
+    pub const UE: u32 = 1 << 4;
+    /// Precision flag.
+    pub const PE: u32 = 1 << 5;
+    /// Denormals-are-zero.
+    pub const DAZ: u32 = 1 << 6;
+    /// Invalid-operation mask.
+    pub const IM: u32 = 1 << 7;
+    /// Denormal mask.
+    pub const DM: u32 = 1 << 8;
+    /// Divide-by-zero mask.
+    pub const ZM: u32 = 1 << 9;
+    /// Overflow mask.
+    pub const OM: u32 = 1 << 10;
+    /// Underflow mask.
+    pub const UM: u32 = 1 << 11;
+    /// Precision mask.
+    pub const PM: u32 = 1 << 12;
+    /// Flush-to-zero.
+    pub const FZ: u32 = 1 << 15;
+    /// Bits defined by the architecture (write mask).
+    pub const ALL: u32 = 0xFFFF;
+    /// Power-on value: all exceptions masked.
+    pub const RESET: u32 = 0x1F80;
+}
+
+/// Model-specific register ids PDG knows by name (values from AMD manuals).
+pub mod msr {
+    /// Extended feature enables (NX, SCE, ...).
+    pub const EFER: u32 = 0xC000_0080;
+    /// Legacy syscall target CS.
+    pub const STAR: u32 = 0xC000_0081;
+    /// `syscall` target RIP.
+    pub const LSTAR: u32 = 0xC000_0082;
+    /// Compatibility-mode syscall target (unused by 64-bit OSes).
+    pub const CSTAR: u32 = 0xC000_0083;
+    /// `syscall` flags mask.
+    pub const SFMASK: u32 = 0xC000_0084;
+    /// FS base.
+    pub const FS_BASE: u32 = 0xC000_0100;
+    /// GS base.
+    pub const GS_BASE: u32 = 0xC000_0101;
+    /// Kernel-mode GS base (swapgs pair).
+    pub const KERNEL_GS_BASE: u32 = 0xC000_0102;
+}
+
 /// Architectural register state of one logical processor (one hardware
 /// thread of a Zen 2 core).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,12 +120,52 @@ pub struct CpuState {
     pub rip: u64,
     /// Flags register (see [`rflags`] for bit positions).
     pub rflags: u64,
+    /// Vector registers, full 256-bit view: `ymm[n][0]` is the low 128 bits
+    /// (the XMM register), `ymm[n][1]` the upper half (AVX). Non-VEX
+    /// (legacy SSE) writes to XMMn zero the upper half, as on AVX-capable
+    /// silicon like Zen 2.
+    pub ymm: [[u128; 2]; 16],
+    /// SSE control/status register.
+    pub mxcsr: u32,
+    /// Global descriptor-table register.
+    pub gdtr: DescriptorTableRegister,
+    /// Interrupt descriptor-table register.
+    pub idtr: DescriptorTableRegister,
+    /// FS segment base (TLS pointer convention on x86-64).
+    pub fs_base: u64,
+    /// GS segment base (kernel per-CPU convention; see `swapgs`).
+    pub gs_base: u64,
+    /// Sparse model-specific register file (id → value); FS/GS bases are
+    /// additionally mirrored into [`CpuState::fs_base`]/[`gs_base`] on
+    /// access for the address-generation path.
+    pub msrs: std::collections::BTreeMap<u32, u64>,
+    /// Control register CR0 (PE/PG modelled as permanently enabled: PDG
+    /// runs the guest in long mode from reset).
+    pub cr0: u64,
+    /// Control register CR2 — page-fault linear address.
+    pub cr2: u64,
+    /// Control register CR3 — page-table root (kept in sync with the
+    /// platform layer's MMU through `MemoryAccess::reload_cr3`).
+    pub cr3: u64,
+    /// Control register CR4 (PAE/PGE/OSXSR bits mirrored for guest reads).
+    pub cr4: u64,
+    /// Virtual timestamp counter, advanced as guest instructions retire.
+    /// `rdtsc` reads it; the JIT bumps it per block using its instruction
+    /// count. Monotonic within a run, not host-time-anchored (documented in
+    /// the Phase-2 report).
+    pub tsc: u64,
 }
 
 impl Default for CpuState {
     fn default() -> Self {
         Self::new(0, 0)
     }
+}
+
+/// Power-on MSR file: EFER reflects the enabled long-mode configuration
+/// (SCE | LME | LMA | NXE).
+fn seeded_msrs() -> std::collections::BTreeMap<u32, u64> {
+    [(msr::EFER, 0xD01u64)].into_iter().collect()
 }
 
 impl CpuState {
@@ -70,7 +177,98 @@ impl CpuState {
             gpr,
             rip: entry,
             rflags: rflags::RESERVED_1,
+            ymm: [[0; 2]; 16],
+            mxcsr: mxcsr::RESET,
+            gdtr: DescriptorTableRegister::default(),
+            idtr: DescriptorTableRegister::default(),
+            fs_base: 0,
+            gs_base: 0,
+            msrs: seeded_msrs(),
+            // Long mode from reset: PE | PG (+MP); PAE, PGE, OSFXSR, OSXMMEXCPT.
+            cr0: 0x8000_0013,
+            cr2: 0,
+            cr3: 0,
+            cr4: 0x6A0,
+            tsc: 0,
         }
+    }
+
+    // ----- vector register views --------------------------------------------
+
+    /// Read XMMn (low 128 bits of the vector register) by iced register id.
+    /// Returns `None` for non-XMM ids.
+    pub fn xmm(&self, r: Register) -> Option<u128> {
+        Self::xmm_index(r).map(|i| self.ymm[i][0])
+    }
+
+    /// Legacy-SSE write of XMMn: sets the low 128 bits and zeroes the upper
+    /// half (AVX register-zeroing rule).
+    pub fn set_xmm(&mut self, r: Register, value: u128) -> Option<()> {
+        let i = Self::xmm_index(r)?;
+        self.ymm[i] = [value, 0];
+        Some(())
+    }
+
+    /// Full 256-bit view of YMMn as `[low, high]`.
+    pub fn ymm_halves(&self, r: Register) -> Option<[u128; 2]> {
+        Self::xmm_index(r).map(|i| self.ymm[i])
+    }
+
+    /// Full 256-bit write of YMMn.
+    pub fn set_ymm_halves(&mut self, r: Register, value: [u128; 2]) -> Option<()> {
+        let i = Self::xmm_index(r)?;
+        self.ymm[i] = value;
+        Some(())
+    }
+
+    /// Raw YMM write by index (used by the SIMD kernels).
+    pub fn set_ymm_idx(&mut self, i: usize, value: [u128; 2]) {
+        self.ymm[i] = value;
+    }
+
+    /// Raw YMM read by index.
+    pub fn ymm_idx(&self, i: usize) -> [u128; 2] {
+        self.ymm[i]
+    }
+
+    /// Map an iced XMM/YMM register id to its index 0..16.
+    pub fn xmm_index(r: Register) -> Option<usize> {
+        use Register::*;
+        Some(match r {
+            XMM0 => 0,
+            XMM1 => 1,
+            XMM2 => 2,
+            XMM3 => 3,
+            XMM4 => 4,
+            XMM5 => 5,
+            XMM6 => 6,
+            XMM7 => 7,
+            XMM8 => 8,
+            XMM9 => 9,
+            XMM10 => 10,
+            XMM11 => 11,
+            XMM12 => 12,
+            XMM13 => 13,
+            XMM14 => 14,
+            XMM15 => 15,
+            YMM0 => 0,
+            YMM1 => 1,
+            YMM2 => 2,
+            YMM3 => 3,
+            YMM4 => 4,
+            YMM5 => 5,
+            YMM6 => 6,
+            YMM7 => 7,
+            YMM8 => 8,
+            YMM9 => 9,
+            YMM10 => 10,
+            YMM11 => 11,
+            YMM12 => 12,
+            YMM13 => 13,
+            YMM14 => 14,
+            YMM15 => 15,
+            _ => return Option::None,
+        })
     }
 
     // ----- flag accessors -------------------------------------------------
@@ -239,7 +437,7 @@ pub(crate) fn mask(w: u32) -> u64 {
 
 /// Decompose an iced-x86 GPR register id into (gpr index, size in bytes,
 /// is-high-byte). Returns `None` for non-GPR ids.
-pub(crate) fn decode_reg(r: Register) -> Option<(usize, u32, bool)> {
+pub fn decode_reg(r: Register) -> Option<(usize, u32, bool)> {
     use Register::*;
     Some(match r {
         AL => (0, 1, false),

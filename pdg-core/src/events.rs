@@ -32,6 +32,13 @@ pub enum Event {
         /// Transfer length in bytes.
         len: u64,
     },
+    /// An inter-processor interrupt was delivered (SMP machines).
+    IpiSent {
+        /// Destination logical core.
+        target: u8,
+        /// Vector delivered.
+        vector: u8,
+    },
 }
 
 /// Broadcast bus. Subscribers receive a copy of every published event.

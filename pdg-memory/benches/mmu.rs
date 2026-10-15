@@ -9,8 +9,8 @@ use pdg_memory::{
 };
 
 fn fixture() -> (Bus, Mmu) {
-    let mut bus = Bus::new(0x20_0000).unwrap();
-    let mut builder = PageTableBuilder::new(&mut bus, 0x1000, 0x2_0000);
+    let bus = Bus::new(0x20_0000).unwrap();
+    let mut builder = PageTableBuilder::new(&bus, 0x1000, 0x2_0000);
     builder
         .map_2m(0, 0, PageFlags::PRESENT | PageFlags::RW | PageFlags::NX)
         .unwrap();
@@ -33,8 +33,8 @@ fn bench_walk(c: &mut Criterion) {
         });
     });
     group.bench_function("read_u64_via_mmu_tlb", |b| {
-        let (mut bus, mut mmu) = fixture();
-        mmu.write(&mut bus, AccessWidth::W64, 0x1F_F000, 0xDEAD)
+        let (bus, mut mmu) = fixture();
+        mmu.write(&bus, AccessWidth::W64, 0x1F_F000, 0xDEAD)
             .unwrap();
         b.iter(|| {
             mmu.read(&bus, AccessWidth::W64, 0x1F_F000).unwrap();
