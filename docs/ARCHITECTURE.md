@@ -152,30 +152,45 @@ pipelines, VRS.
 ### 5.1 Command path
 
 The PS5's graphics command processor consumes **PM4 packets** (AMD's
-publicly documented packet language). Translation pipeline:
+publicly documented packet language). Translation pipeline, live since
+Phase 3:
 
 ```
-Guest PM4 ring → packet decoder → semantic IR → wgpu encoders → host GPU
+Guest PM4 ring → packet decoder → semantic IR (GpuCommand) → GpuDevice → wgpu
 ```
 
-Phase 1 ships the packet framing layer (`Header::type3` with unit-tested
-encode/decode). Phase 3 populates the opcode table against the public AMD
-command-processor documentation and builds the wgpu device.
+The command processor (`pm4/cp`) executes the verified packet subset
+— the four `SET_*_REG` spaces, type-0 writes, draws, dispatches,
+indirect-buffer chains, synchronization (`RELEASE_MEM`, `EVENT_WRITE`,
+`MEM_SEMAPHORE`, `WAIT_REG_MEM`, `ACQUIRE_MEM`), data movement
+(`WRITE_DATA`, `DMA_DATA`, `COPY_DATA`) and state control — against a
+gfx10.3 register model whose offsets are verified against the public
+kernel `gc_10_3_0` headers. Everything else is refused with an error
+naming the opcode. The GNM ring (`ring`) is an MMIO device: the
+emulated CPU programs the ring, rings the doorbell, and polls fences
+in guest RAM — the console driver contract, verified end to end by
+CPU-driven tests.
 
 ### 5.2 Shader path
 
 Games ship precompiled native ISA (GCN/RDNA-lineage) shaders. PDG
-recompiles them ahead of or at first use:
+recompiles them at first use (Phase 3):
 
 ```
-Guest native ISA ──(lifter)──► SPIR-V ──(naga)──► WGSL ──► wgpu pipeline
+Guest native ISA ──(decode)──► Inst ──(lifter, rspirv)──► SPIR-V ──(naga)──► WGSL ──► wgpu pipeline
 ```
 
-A content-addressed on-disk shader cache avoids re-translation across
-runs. Hardware ray tracing maps to Vulkan ray pipelines (falling back to
-compute-based traversal where wgpu's abstraction is insufficient — if the
-abstraction gap proves too wide, a thin Vulkan layer via `ash` will be
-added under the same trait seam that `GpuDevice` defines today).
+The decoder covers the gfx10 encoding layouts verified against LLVM's
+public AMDGPU backend (SOP1/2/K/C/P, VOP1/2/3, SMEM, MUBUF, EXP, ...);
+the lifter compiles the subset it can translate *correctly* — the
+Phase-3 mini-GNM vertex-fetch contract (descriptor-table `s_load` +
+`buffer_load` fetches, ALU, `exp` exports) — and refuses everything else
+by instruction name. A content-addressed on-disk shader cache
+(SHA-256 of guest ISA ‖ stage ‖ specialization) avoids re-translation
+across runs. Hardware ray tracing maps to Vulkan ray pipelines
+(falling back to compute-based traversal where wgpu's abstraction is
+insufficient — if the abstraction gap proves too wide, a thin Vulkan
+layer via `ash` will be added under the same `GpuDevice` trait seam).
 
 ### 5.3 Scheduling
 

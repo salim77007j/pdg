@@ -16,5 +16,6 @@ pdg-cpu.workspace = true
 pdg-jit.workspace = true
 pdg-kernel.workspace = true
 pdg-memory.workspace = true
+pdg-gpu.workspace = true
 anyhow.workspace = true
 tempfile = "3"

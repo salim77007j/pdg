@@ -1,6 +1,6 @@
 [package]
 name = "pdg-gpu"
-description = "PDG GPU subsystem: RDNA 2 command translation framework (device traits + PM4 framing; wgpu backend lands in Phase 3)"
+description = "PDG GPU subsystem: PM4 command processor, gfx10.3 register/state model, GCN shader recompilation (ISA->SPIR-V->WGSL), wgpu backend"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,5 +11,11 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+pdg-memory = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
+naga.workspace = true
+rspirv.workspace = true
+sha2.workspace = true
+pollster.workspace = true
+wgpu.workspace = true

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 pdg-core.workspace = true
 pdg-cpu.workspace = true
+pdg-gpu.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
@@ -24,3 +25,7 @@ path = "src/bin/pdg-boot.rs"
 [[bin]]
 name = "pdg-disasm"
 path = "src/bin/pdg-disasm.rs"
+
+[[bin]]
+name = "pdg-wgsldump"
+path = "src/bin/pdg-wgsldump.rs"
