@@ -9,11 +9,18 @@
 //! machine (ELF loading, Orbis syscalls, read-only PFS, kernel objects,
 //! MSI-X-shaped interrupts) the demo program and `pdg-boot --demo-kernel`
 //! run.
-//! The GUI (egui-based: game grid, metadata, settings, BIOS picker, save
-//! states) is Phase 6 work and replaces [`HeadlessLauncher`]'s text output.
+//! The GUI (egui-based: library, settings, BIOS picker, save states,
+//! live console) is Phase 6 work and replaces [`HeadlessLauncher`]'s
+//! text output: the `gui` feature builds [`gui::run_launcher`], and the
+//! `launcher` feature carries the headless-tested model
+//! ([`launcher::LauncherSettings`], [`launcher::scan_save_states`]).
 
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod io_session;
 pub mod kernel_session;
+#[cfg(feature = "launcher")]
+pub mod launcher;
 
 use std::path::{Path, PathBuf};
 

@@ -348,6 +348,10 @@ pub struct Dyn {
 pub struct DynSym {
     /// st_name (offset into DT_STRTAB).
     pub st_name: u32,
+    /// st_info (bind in the high nibble, type in the low one).
+    pub st_info: u8,
+    /// st_shndx (`SHN_UNDEF` = 0 for undefined imports).
+    pub st_shndx: u16,
     /// st_value (link-time address).
     pub st_value: u64,
     /// st_size.
@@ -574,18 +578,29 @@ impl ElfImage {
             let mut o = so;
             while base + o + 24 <= bytes.len() {
                 let st_name = rd_u32(o, "st_name")?;
+                let st_info = file(o, 4, "st_info")?[0];
+                let st_shndx = rd_u16(o + 6, "st_shndx")?;
                 let st_value = rd_u64(o + 8, "st_value")?;
                 let st_size = rd_u64(o + 16, "st_size")?;
-                // The symbol table's length is not tagged; the first entry
-                // whose name does not fit the string table ends the walk.
+                // The symbol table's length is not tagged; two rules end
+                // the walk: a name that does not fit the string table, or
+                // an all-zero entry past index 0 (the mandatory null symbol
+                // is entry 0; linker padding after the last real symbol is
+                // zeros — PDG's own SharedBuilder terminates explicitly).
                 if st_name as usize >= dynstr.len() {
                     break;
                 }
+                let null_entry = st_name == 0 && st_value == 0 && st_size == 0;
                 dynsyms.push(DynSym {
                     st_name,
+                    st_info,
+                    st_shndx,
                     st_value,
                     st_size,
                 });
+                if null_entry && o > so {
+                    break;
+                }
                 o += syment as usize;
             }
         }
@@ -640,14 +655,24 @@ impl ElfImage {
     pub fn sym_name(&self, idx: u32) -> String {
         self.dynsyms
             .get(idx as usize)
-            .and_then(|s| {
-                let end = self.dynstr[s.st_name as usize..]
-                    .iter()
-                    .position(|b| *b == 0)
-                    .map(|p| s.st_name as usize + p)?;
-                Some(String::from_utf8_lossy(&self.dynstr[s.st_name as usize..end]).into_owned())
-            })
+            .map(|s| self.dynstr_name(s.st_name))
             .unwrap_or_default()
+    }
+
+    /// The NUL-terminated string at `off` in the dynamic string table
+    /// (empty when the offset is out of bounds — a malformed image reads
+    /// empty names, never panics).
+    pub fn dynstr_name(&self, off: u32) -> String {
+        if off as usize >= self.dynstr.len() {
+            return String::new();
+        }
+        let from = off as usize;
+        let end = self.dynstr[from..]
+            .iter()
+            .position(|b| *b == 0)
+            .map(|p| from + p)
+            .unwrap_or(self.dynstr.len());
+        String::from_utf8_lossy(&self.dynstr[from..end]).into_owned()
     }
 
     /// Address of the dynamic symbol named `name` (link-time).
@@ -803,13 +828,28 @@ pub struct LoadedImage {
 ///
 /// `bias` relocates every address (ET_DYN passed with a nonzero base; it
 /// must be page-aligned). `resolver` resolves symbol relocations; `None`
-/// refuses them.
+/// refuses them. Phase 6 splits the monolithic Phase-5 `load` into
+/// [`map`] + [`relocate`] so the dynlib layer can load a module's whole
+/// `DT_NEEDED` closure before applying any cross-module relocation — the
+/// same two-phase discipline a real dynamic linker follows. `load` remains
+/// the one-shot composition with the Phase-5 TLS model (module TLS block
+/// at arena offset 0).
 pub fn load(
     image: &ElfImage,
     vm: &mut VmManager,
     bias: u64,
     resolver: Option<&dyn SymbolResolver>,
 ) -> Result<LoadedImage, ElfError> {
+    let mut loaded = map(image, vm, bias)?;
+    loaded.relocations_applied = relocate(image, vm, bias, 0, resolver)?;
+    Ok(loaded)
+}
+
+/// Map `image` into `vm` — segments, permissions, file bytes — without
+/// applying relocations. The dynlib layer maps a module and its whole
+/// dependency closure first, then relocates each with the others' exports
+/// in scope.
+pub fn map(image: &ElfImage, vm: &mut VmManager, bias: u64) -> Result<LoadedImage, ElfError> {
     if image.e_type == ET_EXEC && bias != 0 {
         return Err(ElfError::BadDynamic {
             what: "ET_EXEC refuses a nonzero load bias",
@@ -856,12 +896,42 @@ pub fn load(
             .map_err(|_| ElfError::SegmentBeyondFile)?;
     }
 
-    // Apply relocations.
+    let tls = image.tls().map(|t| TlsBlock {
+        vaddr: t.p_vaddr + bias,
+        filesz: t.p_filesz,
+        memsz: t.p_memsz,
+    });
+
+    Ok(LoadedImage {
+        entry: image.e_entry + bias,
+        bias,
+        segments,
+        tls,
+        relocations_applied: 0,
+    })
+}
+
+/// Apply `image`'s relocations against the mapped module.
+///
+/// `tls_offset` is the module's TLS-block offset inside the process TLS
+/// arena (0 for the main module — the Phase-5 model); `TPOFF64` values are
+/// `tls_offset + addend`, so `fs:[tpoff]` addresses the variable in the
+/// calling thread's own copy of the aggregated template. `resolver`
+/// resolves symbol relocations; `None` refuses them.
+pub fn relocate(
+    image: &ElfImage,
+    vm: &mut VmManager,
+    bias: u64,
+    tls_offset: u64,
+    resolver: Option<&dyn SymbolResolver>,
+) -> Result<usize, ElfError> {
     let mut applied = 0usize;
     for r in &image.relas {
         let target = r.r_offset + bias;
-        let inside = segments
+        let inside = image
+            .phdrs
             .iter()
+            .filter(|p| p.p_type == pt::LOAD)
             .any(|p| p.p_vaddr + bias <= target && target + 8 <= p.p_vaddr + bias + p.p_memsz);
         if !inside {
             return Err(ElfError::RelocOutside {
@@ -873,9 +943,10 @@ pub fn load(
         let value: u64 = match r.r_type {
             rt::X86_64_RELATIVE => r.r_addend.wrapping_add(bias as i64) as u64,
             rt::X86_64_TPOFF64 => {
-                // PDG model: FS base = TLS block base; the addend is the
+                // PDG TLS model: the aggregated arena holds one copy of
+                // every module's template per thread; the addend is the
                 // block-relative offset (see module docs).
-                r.r_addend as u64
+                (r.r_addend as u64).wrapping_add(tls_offset)
             }
             rt::X86_64_64 | rt::X86_64_GLOB_DAT | rt::X86_64_JUMP_SLOT => {
                 let name = image.sym_name(r.r_sym);
@@ -907,20 +978,7 @@ pub fn load(
         vm.write_va_loader(target, &value.to_le_bytes())?;
         applied += 1;
     }
-
-    let tls = image.tls().map(|t| TlsBlock {
-        vaddr: t.p_vaddr + bias,
-        filesz: t.p_filesz,
-        memsz: t.p_memsz,
-    });
-
-    Ok(LoadedImage {
-        entry: image.e_entry + bias,
-        bias,
-        segments,
-        tls,
-        relocations_applied: applied,
-    })
+    Ok(applied)
 }
 
 // ---------------------------------------------------------------------------
@@ -1127,6 +1185,319 @@ impl ElfBuilder {
         if !tls_bytes.is_empty() {
             img[tls_off..tls_off + tls_bytes.len()].copy_from_slice(tls_bytes);
         }
+        img
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared-object builder (Phase 6: the dynlib test article)
+// ---------------------------------------------------------------------------
+
+/// One defined export of a [`SharedBuilder`] image.
+#[derive(Debug, Clone)]
+pub struct ExportSym {
+    /// Symbol name.
+    pub name: String,
+    /// `st_value` (link-time).
+    pub value: u64,
+    /// `st_size`.
+    pub size: u64,
+    /// `STT_OBJECT` (data) when set, `STT_FUNC` otherwise — the dynsym
+    /// `st_info` type byte the builder emits.
+    pub object: bool,
+}
+
+impl ExportSym {
+    /// A function export.
+    pub fn func(name: &str, value: u64, size: u64) -> Self {
+        Self {
+            name: name.to_owned(),
+            value,
+            size,
+            object: false,
+        }
+    }
+
+    /// A data export.
+    pub fn object(name: &str, value: u64, size: u64) -> Self {
+        Self {
+            name: name.to_owned(),
+            value,
+            size,
+            object: true,
+        }
+    }
+}
+
+/// Assembles minimal `ET_DYN` shared objects in memory — the PRX-shaped
+/// images the Phase-6 dynlib layer loads, links and resolves.
+///
+/// The layout mirrors what the runtime expects: one RX `PT_LOAD` (text),
+/// one RW `PT_LOAD` (data plus the dynamic tables), a `PT_DYNAMIC`
+/// carrying `DT_SYMTAB`/`DT_STRTAB`/`DT_RELA`/`DT_NEEDED`, and an optional
+/// `PT_TLS` template riding inside the data segment. The dynamic symbol
+/// table is the mandated null symbol (index 0), then the undefined
+/// imports, then the defined exports, then an explicit all-zero terminator
+/// entry (the parser's documented walk rule). Symbol indices are assigned
+/// in that order — [`SharedBuilder::sym_index`] reports them so callers
+/// can write `JUMP_SLOT`/`GLOB_DAT` relocations against imports.
+pub struct SharedBuilder {
+    /// e_entry (link-time, small for ET_DYN).
+    pub entry: u64,
+    /// Text bytes.
+    pub text: Vec<u8>,
+    /// Data bytes.
+    pub data: Vec<u8>,
+    /// Text link-time virtual address (e.g. 0).
+    pub text_va: u64,
+    /// Data link-time virtual address (e.g. 0x1_0000).
+    pub data_va: u64,
+    /// Defined exports, in order.
+    pub exports: Vec<ExportSym>,
+    /// Undefined imports, in order.
+    pub imports: Vec<String>,
+    /// DT_NEEDED library names, in order.
+    pub needed: Vec<String>,
+    /// RELA entries (r_sym from [`SharedBuilder::sym_index`]).
+    pub relas: Vec<Rela>,
+    /// TLS template (appended after data, described by PT_TLS).
+    pub tls: Option<Vec<u8>>,
+}
+
+impl SharedBuilder {
+    /// A builder with empty sections at the given link-time addresses.
+    pub fn new(text_va: u64, data_va: u64, entry: u64) -> Self {
+        Self {
+            entry,
+            text: Vec::new(),
+            data: Vec::new(),
+            text_va,
+            data_va,
+            exports: Vec::new(),
+            imports: Vec::new(),
+            needed: Vec::new(),
+            relas: Vec::new(),
+            tls: None,
+        }
+    }
+
+    /// The dynamic-symbol index `name` will occupy (import or export).
+    ///
+    /// Indices are deterministic: 0 is the null symbol, then imports in
+    /// order, then exports in order. `None` names a symbol the builder
+    /// will not carry.
+    pub fn sym_index(&self, name: &str) -> Option<u32> {
+        if let Some(i) = self.imports.iter().position(|n| n == name) {
+            return Some(1 + i as u32);
+        }
+        self.exports
+            .iter()
+            .position(|e| e.name == name)
+            .map(|i| 1 + self.imports.len() as u32 + i as u32)
+    }
+
+    /// Serialize the shared object.
+    pub fn build(&self) -> Vec<u8> {
+        const PAGE: usize = 0x1000;
+        let phnum: usize = if self.tls.is_some() { 4 } else { 3 };
+        let ehsize: usize = 64;
+        let phoff: usize = 64;
+        let phentsize: usize = 56;
+        let header_end = phoff + phnum * phentsize;
+        // ABI congruence: p_offset ≡ p_vaddr (mod page).
+        let text_off = (header_end + PAGE - 1) & !(PAGE - 1);
+        let data_off = text_off + PAGE + ((self.text.len() + PAGE - 1) & !(PAGE - 1));
+
+        // Data-segment tail: [caller data][tls template][dynsym][dynstr]
+        // [rela][dynamic] — all inside the RW PT_LOAD.
+        let tls_off_in_data = self.data.len();
+        let tls_bytes = self.tls.as_deref().unwrap_or(&[]);
+        let sym_off_in_data = tls_off_in_data + tls_bytes.len();
+        // dynsym: null + imports + exports + terminator.
+        let nsyms = 1 + self.imports.len() + self.exports.len() + 1;
+        let str_off_in_data = sym_off_in_data + nsyms * 24;
+        let mut dynstr: Vec<u8> = vec![0];
+        let mut name_off = |s: &str| -> u32 {
+            let off = dynstr.len() as u32;
+            dynstr.extend_from_slice(s.as_bytes());
+            dynstr.push(0);
+            off
+        };
+        let import_name_offs: Vec<u32> = self.imports.iter().map(|n| name_off(n)).collect();
+        let export_name_offs: Vec<u32> = self.exports.iter().map(|e| name_off(&e.name)).collect();
+        let needed_offs: Vec<u32> = self.needed.iter().map(|n| name_off(n)).collect();
+        let rela_off_in_data = str_off_in_data + dynstr.len();
+        let rela_bytes = self.relas.len() * 24;
+        let dyn_off_in_data = rela_off_in_data + rela_bytes;
+        // dynamic entries: SYMTAB, STRTAB, STRSZ, SYMENT, RELA, RELASZ,
+        // RELAENT, NEEDED*, NULL.
+        let dyn_bytes_len = (8 + self.needed.len()) * 16;
+
+        let mut data_seg = self.data.clone();
+        data_seg.resize(dyn_off_in_data + dyn_bytes_len, 0);
+        if !tls_bytes.is_empty() {
+            data_seg[tls_off_in_data..tls_off_in_data + tls_bytes.len()].copy_from_slice(tls_bytes);
+        }
+
+        // dynsym.
+        let sym_va = self.data_va + sym_off_in_data as u64;
+        let put_sym =
+            |seg: &mut [u8], at: usize, name: u32, info: u8, shndx: u16, value: u64, size: u64| {
+                seg[at..at + 4].copy_from_slice(&name.to_le_bytes());
+                seg[at + 4] = info;
+                seg[at + 5] = 0; // st_other
+                seg[at + 6..at + 8].copy_from_slice(&shndx.to_le_bytes());
+                seg[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+                seg[at + 16..at + 24].copy_from_slice(&size.to_le_bytes());
+            };
+        // ELF64 st_info: bind in the high nibble (STB_GLOBAL = 1), type
+        // in the low one (STT_NOTYPE 0, STT_OBJECT 1, STT_FUNC 2) — the
+        // public ABI values.
+        const NOTYPE: u8 = 0;
+        const OBJECT: u8 = 1;
+        const FUNC: u8 = 2;
+        const GLOBAL: u8 = 1 << 4;
+        let mut at = sym_off_in_data;
+        put_sym(&mut data_seg, at, 0, 0, 0, 0, 0); // index 0: the null symbol
+        at += 24;
+        for off in &import_name_offs {
+            put_sym(&mut data_seg, at, *off, GLOBAL | NOTYPE, 0, 0, 0);
+            at += 24;
+        }
+        for (off, e) in export_name_offs.iter().zip(self.exports.iter()) {
+            let ty = if e.object { OBJECT } else { FUNC };
+            // st_shndx: a nonzero "defined" index (SHN_UNDEF=0 marks
+            // imports). These minimal images carry no section headers;
+            // dynamic linking consults the index only for UNDEF checks.
+            put_sym(&mut data_seg, at, *off, GLOBAL | ty, 1, e.value, e.size);
+            at += 24;
+        }
+        put_sym(&mut data_seg, at, 0, 0, 0, 0, 0); // terminator
+
+        // dynstr.
+        data_seg[str_off_in_data..str_off_in_data + dynstr.len()].copy_from_slice(&dynstr);
+
+        // rela.
+        for (i, r) in self.relas.iter().enumerate() {
+            let o = rela_off_in_data + i * 24;
+            data_seg[o..o + 8].copy_from_slice(&r.r_offset.to_le_bytes());
+            let info = (u64::from(r.r_sym) << 32) | u64::from(r.r_type);
+            data_seg[o + 8..o + 16].copy_from_slice(&info.to_le_bytes());
+            data_seg[o + 16..o + 24].copy_from_slice(&(r.r_addend as u64).to_le_bytes());
+        }
+
+        // dynamic.
+        let strtab_va = self.data_va + str_off_in_data as u64;
+        let rela_va = self.data_va + rela_off_in_data as u64;
+        let mut dbuf: Vec<u8> = Vec::with_capacity(dyn_bytes_len);
+        let ent = |buf: &mut Vec<u8>, tag: u64, val: u64| {
+            buf.extend_from_slice(&tag.to_le_bytes());
+            buf.extend_from_slice(&val.to_le_bytes());
+        };
+        ent(&mut dbuf, dt::SYMTAB, sym_va);
+        ent(&mut dbuf, dt::STRTAB, strtab_va);
+        ent(&mut dbuf, dt::STRSZ, dynstr.len() as u64);
+        ent(&mut dbuf, dt::SYMENT, 24);
+        ent(&mut dbuf, dt::RELA, rela_va);
+        ent(&mut dbuf, dt::RELASZ, (self.relas.len() * 24) as u64);
+        ent(&mut dbuf, dt::RELAENT, 24);
+        for off in &needed_offs {
+            ent(&mut dbuf, dt::NEEDED, u64::from(*off));
+        }
+        ent(&mut dbuf, dt::NULL, 0);
+        data_seg[dyn_off_in_data..dyn_off_in_data + dbuf.len()].copy_from_slice(&dbuf);
+
+        let data_memsz = (data_seg.len() + 0xFFF) & !0xFFF;
+        data_seg.resize(data_memsz, 0);
+
+        let mut img = vec![0u8; data_off + data_seg.len()];
+
+        // ELF header (ET_DYN: position-independent by construction).
+        let h = &mut img[..ehsize];
+        h[0..4].copy_from_slice(&ELFMAG);
+        h[4] = ELFCLASS64;
+        h[5] = ELFDATA2LSB;
+        h[6] = 1; // EV_CURRENT
+        h[0x10..0x12].copy_from_slice(&ET_DYN.to_le_bytes());
+        h[0x12..0x14].copy_from_slice(&EM_X86_64.to_le_bytes());
+        h[0x14..0x18].copy_from_slice(&1u32.to_le_bytes());
+        h[0x18..0x20].copy_from_slice(&self.entry.to_le_bytes());
+        h[0x20..0x28].copy_from_slice(&(phoff as u64).to_le_bytes());
+        h[0x36..0x38].copy_from_slice(&(phentsize as u16).to_le_bytes());
+        h[0x38..0x3A].copy_from_slice(&(phnum as u16).to_le_bytes());
+
+        let push_ph = |img: &mut Vec<u8>,
+                       idx: usize,
+                       ty: u32,
+                       flags: u32,
+                       off: usize,
+                       va: u64,
+                       filesz: usize,
+                       memsz: usize,
+                       align: u64| {
+            let o = phoff + idx * phentsize;
+            img[o..o + 4].copy_from_slice(&ty.to_le_bytes());
+            img[o + 4..o + 8].copy_from_slice(&flags.to_le_bytes());
+            img[o + 8..o + 16].copy_from_slice(&(off as u64).to_le_bytes());
+            img[o + 16..o + 24].copy_from_slice(&va.to_le_bytes());
+            img[o + 24..o + 32].copy_from_slice(&0u64.to_le_bytes()); // p_paddr
+            img[o + 32..o + 40].copy_from_slice(&(filesz as u64).to_le_bytes());
+            img[o + 40..o + 48].copy_from_slice(&(memsz as u64).to_le_bytes());
+            img[o + 48..o + 56].copy_from_slice(&align.to_le_bytes());
+        };
+        // 0: text RX
+        push_ph(
+            &mut img,
+            0,
+            pt::LOAD,
+            pf::R | pf::X,
+            text_off,
+            self.text_va,
+            self.text.len(),
+            self.text.len(),
+            0x1000,
+        );
+        // 1: data RW (everything dynamic rides here)
+        push_ph(
+            &mut img,
+            1,
+            pt::LOAD,
+            pf::R | pf::W,
+            data_off,
+            self.data_va,
+            data_seg.len(),
+            data_memsz,
+            0x1000,
+        );
+        // 2: PT_DYNAMIC
+        push_ph(
+            &mut img,
+            2,
+            pt::DYNAMIC,
+            pf::R | pf::W,
+            data_off + dyn_off_in_data,
+            self.data_va + dyn_off_in_data as u64,
+            dyn_bytes_len,
+            dyn_bytes_len,
+            8,
+        );
+        // 3: PT_TLS describing the template inside the data segment.
+        if let Some(t) = &self.tls {
+            push_ph(
+                &mut img,
+                3,
+                pt::TLS,
+                pf::R | pf::W,
+                data_off + tls_off_in_data,
+                self.data_va + tls_off_in_data as u64,
+                t.len(),
+                t.len().max(8),
+                8,
+            );
+        }
+
+        img[text_off..text_off + self.text.len()].copy_from_slice(&self.text);
+        img[data_off..data_off + data_seg.len()].copy_from_slice(&data_seg);
         img
     }
 }

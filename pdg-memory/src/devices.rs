@@ -33,6 +33,12 @@ impl ConsoleDevice {
         self.out.lock().expect("console lock poisoned").clear();
     }
 
+    /// Restore a transcript (session snapshot resume: the pre-snapshot
+    /// output stays part of the observed console).
+    pub fn set_output(&self, s: &str) {
+        *self.out.lock().expect("console lock poisoned") = s.to_owned();
+    }
+
     fn emit(&self, value: u64, width: AccessWidth) {
         let mut out = self.out.lock().expect("console lock poisoned");
         for i in 0..width.size() {

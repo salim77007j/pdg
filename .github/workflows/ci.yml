@@ -80,3 +80,39 @@ jobs:
         with:
           name: coverage-lcov
           path: lcov.info
+
+  # Phase 6: the launcher GUI tier — the egui stack compiles on every
+  # platform (the glow backend; no runtime display needed for a check).
+  gui:
+    name: Launcher GUI (compile check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check the GUI feature
+        run: cargo check -p pdg-frontend --features gui
+      - name: Check the launcher binary
+        run: cargo check -p pdg-tools --features gui --bins
+
+  # Phase 6: release engineering — a tagged push builds and uploads the
+  # release binaries.
+  release:
+    name: Release build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: cargo build --release -p pdg-tools --features gui --bins
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/pdg-boot target/release/pdg-disasm target/release/pdg-wgsldump target/release/pdg-launcher dist/
+          cp README.md LICENSE dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdg-${{ github.ref_name }}
+          path: dist

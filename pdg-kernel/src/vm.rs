@@ -86,6 +86,34 @@ struct Region {
     anonymous: bool,
 }
 
+/// A [`VmManager`]'s host-side state (session snapshots).
+#[derive(Debug, Clone)]
+pub struct VmSnapshot {
+    /// PML4 physical base.
+    pub pml4: u64,
+    /// Bump-allocator cursor.
+    pub next_frame: u64,
+    /// Frame-pool cap.
+    pub frame_limit: u64,
+    /// Tracked regions.
+    pub regions: Vec<VmRegionSnap>,
+    /// mmap cursor.
+    pub mmap_cursor: u64,
+    /// mmap cap.
+    pub mmap_limit: u64,
+}
+
+/// One tracked region in a snapshot.
+#[derive(Debug, Clone)]
+pub struct VmRegionSnap {
+    /// Virtual start.
+    pub start: u64,
+    /// Length.
+    pub len: u64,
+    /// mmap-provenance flag.
+    pub anonymous: bool,
+}
+
 /// The process address space: page tables + a frame allocator + the region
 /// bookkeeping `mmap`/`munmap`/`mprotect` operate on.
 pub struct VmManager {
@@ -466,6 +494,49 @@ impl VmManager {
     }
 
     /// Number of tracked regions (tests).
+    /// Capture the host-side allocator state (session snapshots: the
+    /// page tables themselves live in guest RAM and are captured with it;
+    /// these are the cursors and bookkeeping a resumed kernel needs).
+    pub fn snapshot(&self) -> VmSnapshot {
+        VmSnapshot {
+            pml4: self.pml4,
+            next_frame: self.next_frame,
+            frame_limit: self.frame_limit,
+            regions: self
+                .regions
+                .iter()
+                .map(|r| VmRegionSnap {
+                    start: r.start,
+                    len: r.len,
+                    anonymous: r.anonymous,
+                })
+                .collect(),
+            mmap_cursor: self.mmap_cursor,
+            mmap_limit: self.mmap_limit,
+        }
+    }
+
+    /// Restore the allocator state (a fresh manager over the same layout;
+    /// the page tables in guest RAM carry the mappings themselves).
+    pub fn restore(&mut self, snap: &VmSnapshot) {
+        self.pml4 = snap.pml4;
+        self.next_frame = snap.next_frame;
+        self.frame_limit = snap.frame_limit;
+        self.regions = snap
+            .regions
+            .iter()
+            .map(|r| Region {
+                start: r.start,
+                len: r.len,
+                anonymous: r.anonymous,
+            })
+            .collect();
+        self.mmap_cursor = snap.mmap_cursor;
+        self.mmap_limit = snap.mmap_limit;
+        self.flush_tlb();
+    }
+
+    /// The number of tracked regions (diagnostics).
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
@@ -607,6 +678,61 @@ impl pdg_cpu::MemoryAccess for ProcessMemory {
 pub fn attach_console(bus: &mut Bus, base: u64, console: Arc<ConsoleDevice>) {
     bus.attach_mmio(base, 0x1000, console);
 }
+impl VmSnapshot {
+    /// Encode (little-endian, length-prefixed).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut o = Vec::new();
+        o.extend_from_slice(&self.pml4.to_le_bytes());
+        o.extend_from_slice(&self.next_frame.to_le_bytes());
+        o.extend_from_slice(&self.frame_limit.to_le_bytes());
+        o.extend_from_slice(&(self.regions.len() as u32).to_le_bytes());
+        for r in &self.regions {
+            o.extend_from_slice(&r.start.to_le_bytes());
+            o.extend_from_slice(&r.len.to_le_bytes());
+            o.extend_from_slice(&[u8::from(r.anonymous)]);
+        }
+        o.extend_from_slice(&self.mmap_cursor.to_le_bytes());
+        o.extend_from_slice(&self.mmap_limit.to_le_bytes());
+        o
+    }
+
+    /// Decode [`VmSnapshot::to_bytes`].
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        let mut p = 0usize;
+        let rd_u64 = |b: &[u8], p: &mut usize| -> Option<u64> {
+            let v = u64::from_le_bytes(b.get(*p..*p + 8)?.try_into().ok()?);
+            *p += 8;
+            Some(v)
+        };
+        let pml4 = rd_u64(b, &mut p)?;
+        let next_frame = rd_u64(b, &mut p)?;
+        let frame_limit = rd_u64(b, &mut p)?;
+        let n = u32::from_le_bytes(b.get(p..p + 4)?.try_into().ok()?) as usize;
+        p += 4;
+        let mut regions = Vec::with_capacity(n);
+        for _ in 0..n {
+            let start = rd_u64(b, &mut p)?;
+            let len = rd_u64(b, &mut p)?;
+            let anonymous = *b.get(p)?;
+            p += 1;
+            regions.push(VmRegionSnap {
+                start,
+                len,
+                anonymous: anonymous != 0,
+            });
+        }
+        let mmap_cursor = rd_u64(b, &mut p)?;
+        let mmap_limit = rd_u64(b, &mut p)?;
+        Some(Self {
+            pml4,
+            next_frame,
+            frame_limit,
+            regions,
+            mmap_cursor,
+            mmap_limit,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -716,3 +842,7 @@ mod tests {
         assert!(pm.read(8, va + 0x1000).is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Snapshot binary codec
+// ---------------------------------------------------------------------------

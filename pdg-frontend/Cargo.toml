@@ -17,7 +17,24 @@ pdg-cpu.workspace = true
 pdg-io.workspace = true
 pdg-kernel.workspace = true
 pdg-memory.workspace = true
+serde = { workspace = true, optional = true }
+sha2.workspace = true
+toml = { workspace = true, optional = true }
 tracing.workspace = true
+
+[features]
+# The egui launcher GUI (eframe, glow + X11 — the lightest windowing
+# path; compiles headless in CI via `cargo check --features gui`).
+gui = ["dep:eframe", "launcher"]
+# Launcher settings persistence + save-state metadata parsing (no GUI
+# needed — the headless launcher uses these too).
+launcher = ["dep:serde", "dep:toml"]
+
+[dependencies.eframe]
+version = "0.37"
+optional = true
+default-features = false
+features = ["glow", "x11", "default_fonts"]
 
 [dev-dependencies]
 tempfile = "3"

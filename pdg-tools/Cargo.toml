@@ -32,3 +32,11 @@ path = "src/bin/pdg-disasm.rs"
 [[bin]]
 name = "pdg-wgsldump"
 path = "src/bin/pdg-wgsldump.rs"
+
+[[bin]]
+name = "pdg-launcher"
+path = "src/bin/pdg-launcher.rs"
+required-features = ["gui"]
+
+[features]
+gui = ["pdg-frontend/gui"]

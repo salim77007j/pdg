@@ -874,6 +874,13 @@ impl Interpreter {
             // ---- system / MSRs / descriptor tables ---------------------------
             Syscall => match self.syscall_hook.as_mut() {
                 Some(hook) => {
+                    // The `syscall` retires the moment the kernel takes
+                    // over: hook faults (process exit, thread exit,
+                    // umtx parking) resume execution *after* the
+                    // instruction, never re-run it — a parked thread that
+                    // re-executed its wait would see stale state (a
+                    // handed-off mutex would read as its own).
+                    self.state.rip = next_ip;
                     hook.on_syscall(&mut self.state, mem)?;
                     Ok(Action::Next)
                 }

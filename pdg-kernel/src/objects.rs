@@ -138,7 +138,7 @@ pub struct EventFlagAttrs {
 }
 
 /// A 64-bit event flag.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EventFlag {
     /// Current pattern.
     pub pattern: u64,
@@ -206,7 +206,7 @@ impl EventFlag {
 // ---------------------------------------------------------------------------
 
 /// A recursive, owner-tracking mutex.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KMutex {
     /// Owning thread id, 0 = unlocked.
     pub owner: u64,
@@ -284,7 +284,7 @@ impl KMutex {
 // ---------------------------------------------------------------------------
 
 /// A counting semaphore.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Semaphore {
     /// Current count.
     pub value: u32,
@@ -342,7 +342,7 @@ pub struct KEvent {
 }
 
 /// An event queue: posted events wait to be drained.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Equeue {
     /// Posted, undrained events (FIFO).
     queue: Vec<KEvent>,
@@ -381,6 +381,16 @@ impl Equeue {
     pub fn drain_all(&mut self) -> Vec<KEvent> {
         std::mem::take(&mut self.queue)
     }
+
+    /// The queued events, in order (snapshot support).
+    pub fn queued(&self) -> Vec<KEvent> {
+        self.queue.clone()
+    }
+
+    /// Restore queued events (snapshot support).
+    pub fn restore_queued(&mut self, events: Vec<KEvent>) {
+        self.queue = events;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +398,7 @@ impl Equeue {
 // ---------------------------------------------------------------------------
 
 /// A live kernel object.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum KernelObject {
     /// Event flag.
     EventFlag(EventFlag),
@@ -414,7 +424,7 @@ impl KernelObject {
 
 /// Handle-indexed object table. Handles are nonzero, never reused while
 /// their object lives, and allocated in creation order.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ObjectTable {
     next: u64,
     objects: HashMap<u64, KernelObject>,
@@ -428,6 +438,12 @@ impl std::fmt::Debug for ObjectTable {
     }
 }
 
+/// Thread-safe shared object table (the syscall layer and the device pump
+/// both touch queues).
+pub type SharedObjectTable = Arc<RwLock<ObjectTable>>;
+
+/// A shared mutex for the syscall layer's inner state.
+pub type Shared<T> = Arc<PlMutex<T>>;
 impl ObjectTable {
     /// An empty table.
     pub fn new() -> Self {
@@ -529,12 +545,138 @@ impl ObjectTable {
     }
 }
 
-/// Thread-safe shared object table (the syscall layer and the device pump
-/// both touch queues).
-pub type SharedObjectTable = Arc<RwLock<ObjectTable>>;
+impl ObjectTable {
+    /// Encode (little-endian, length-prefixed) — snapshot support.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut keys: Vec<u64> = self.objects.keys().copied().collect();
+        keys.sort_unstable();
+        let mut o = Vec::new();
+        o.extend_from_slice(&self.next.to_le_bytes());
+        o.extend_from_slice(&(keys.len() as u32).to_le_bytes());
+        for k in keys {
+            let obj = &self.objects[&k];
+            o.extend_from_slice(&k.to_le_bytes());
+            match obj {
+                KernelObject::EventFlag(f) => {
+                    o.extend_from_slice(&[0u8]);
+                    o.extend_from_slice(&f.pattern.to_le_bytes());
+                    o.extend_from_slice(&[u8::from(f.attrs.multi_wait)]);
+                    o.extend_from_slice(&f.waiters.to_le_bytes());
+                }
+                KernelObject::Mutex(m) => {
+                    o.extend_from_slice(&[1u8]);
+                    o.extend_from_slice(&m.owner.to_le_bytes());
+                    o.extend_from_slice(&m.depth.to_le_bytes());
+                    let name = m.name.as_bytes();
+                    o.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                    o.extend_from_slice(name);
+                }
+                KernelObject::Semaphore(s) => {
+                    o.extend_from_slice(&[2u8]);
+                    o.extend_from_slice(&s.value.to_le_bytes());
+                    o.extend_from_slice(&s.max.to_le_bytes());
+                }
+                KernelObject::Equeue(q) => {
+                    o.extend_from_slice(&[3u8]);
+                    let events = q.queued();
+                    o.extend_from_slice(&(events.len() as u32).to_le_bytes());
+                    for e in events {
+                        o.extend_from_slice(&e.ident.to_le_bytes());
+                        o.extend_from_slice(&e.filter.to_le_bytes());
+                        o.extend_from_slice(&e.fflags.to_le_bytes());
+                        o.extend_from_slice(&e.data.to_le_bytes());
+                    }
+                }
+            }
+        }
+        o
+    }
+}
 
-/// A shared mutex for the syscall layer's inner state.
-pub type Shared<T> = Arc<PlMutex<T>>;
+impl ObjectTable {
+    /// Decode [`ObjectTable::to_bytes`].
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        let mut p = 0usize;
+        macro_rules! rd_u64 {
+            () => {{
+                let v = u64::from_le_bytes(b.get(p..p + 8)?.try_into().ok()?);
+                p += 8;
+                v
+            }};
+        }
+        macro_rules! rd_u32 {
+            () => {{
+                let v = u32::from_le_bytes(b.get(p..p + 4)?.try_into().ok()?);
+                p += 4;
+                v
+            }};
+        }
+        macro_rules! rd_str {
+            () => {{
+                let n = rd_u32!() as usize;
+                let s = String::from_utf8(b.get(p..p + n)?.to_vec()).ok()?;
+                p += n;
+                s
+            }};
+        }
+        let next = rd_u64!();
+        let n = rd_u32!();
+        let mut objects = HashMap::with_capacity(n as usize);
+        for _ in 0..n {
+            let handle = rd_u64!();
+            let tag = *b.get(p)?;
+            p += 1;
+            let obj = match tag {
+                0 => {
+                    let pattern = rd_u64!();
+                    let multi = *b.get(p)?;
+                    p += 1;
+                    let _waiters = rd_u32!();
+                    KernelObject::EventFlag(EventFlag {
+                        pattern,
+                        attrs: EventFlagAttrs {
+                            multi_wait: multi != 0,
+                        },
+                        waiters: 0,
+                    })
+                }
+                1 => {
+                    let owner = rd_u64!();
+                    let depth = rd_u32!();
+                    let name = rd_str!();
+                    KernelObject::Mutex(KMutex { owner, depth, name })
+                }
+                2 => {
+                    let value = rd_u32!();
+                    let max = rd_u32!();
+                    KernelObject::Semaphore(Semaphore { value, max })
+                }
+                _ => {
+                    let nev = rd_u32!();
+                    let mut events = Vec::with_capacity(nev as usize);
+                    for _ in 0..nev {
+                        events.push(KEvent {
+                            ident: rd_u64!(),
+                            filter: i16::from_le_bytes(b.get(p..p + 2)?.try_into().ok()?),
+                            fflags: rd_u32!(),
+                            data: rd_u64!(),
+                        });
+                    }
+                    let mut q = Equeue::new();
+                    q.restore_queued(events);
+                    KernelObject::Equeue(q)
+                }
+            };
+            objects.insert(handle, obj);
+        }
+        Some(Self { next, objects })
+    }
+
+    /// Restore the handle counter (snapshot decode).
+    pub fn restore_next(&mut self, next: u64) {
+        self.next = next;
+    }
+}
 
 #[cfg(test)]
 mod tests {

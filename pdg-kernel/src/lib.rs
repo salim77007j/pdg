@@ -33,6 +33,7 @@
 //!   remains the generic base for future tables).
 
 pub mod demo;
+pub mod dynlib;
 pub mod exception;
 pub mod idt;
 pub mod loader;
@@ -41,13 +42,17 @@ pub mod objects;
 pub mod orbis;
 pub mod pfs;
 pub mod syscall;
+pub mod thread;
 pub mod vm;
 
+pub use dynlib::{
+    Dynlib, DynlibError, MAIN_HANDLE, Module, ModuleSource, PfsModuleSource, nid, resolve_needed,
+};
 pub use exception::vector;
 pub use idt::{ATTR_INTERRUPT_GATE, ATTR_TRAP_GATE, IdtGate};
 pub use loader::{
-    Dyn, DynSym, ElfError, ElfImage, LoadedImage, ProgramHeader, Rela, SelfContainer, SelfError,
-    load, parse_executable,
+    Dyn, DynSym, ElfError, ElfImage, ExportSym, LoadedImage, ProgramHeader, Rela, SelfContainer,
+    SelfError, SharedBuilder, load, map, parse_executable, relocate,
 };
 pub use objects::{
     ClearMode, Equeue, EventFlag, EventFlagAttrs, KEvent, KMutex, KernelObject, ObjectError,
@@ -56,4 +61,5 @@ pub use objects::{
 pub use orbis::OrbisKernel;
 pub use pfs::{DirEntry, MemoryBlockDevice, Pfs, PfsBuilder, PfsError};
 pub use syscall::{KernelError, SyscallDispatcher, SyscallNumber};
+pub use thread::{MAIN_TID, SpawnedThread, ThreadMeta, ThreadState, ThreadTable, ucontext};
 pub use vm::{ProcessMemory, VmError, VmManager};

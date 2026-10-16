@@ -262,8 +262,14 @@ leading PS3/PS4 emulators use): guest audio calls produce PCM streams that
 
 ## 9. Frontend (`pdg-frontend`)
 
-Phase 6: egui launcher — game library grid, per-game settings, BIOS picker,
-save states, compatibility list. Phase 1 ships the library scan model.
+Phase 6 shipped the launcher: the `launcher` feature carries the
+headless-tested model (TOML settings persistence, `PDGS` save-state
+header scanning) and the `gui` feature adds the egui window (library,
+settings, save states, a run button streaming the guest console). The
+`kernel_session` module also gained the Phase-6 runtime session: the
+thread scheduler over `thr_create`-spawned interpreters, the dynlib
+module load, and the snapshot/restore path. Phase 1's library scan
+model remains the base.
 
 ## 10. Quality strategy
 

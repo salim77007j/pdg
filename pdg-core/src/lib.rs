@@ -18,6 +18,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod crash;
 pub mod events;
 pub mod logging;
 pub mod smp;

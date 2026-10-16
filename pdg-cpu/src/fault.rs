@@ -55,6 +55,31 @@ pub enum Fault {
         code: i32,
     },
 
+    /// A guest thread parked on a blocking primitive (`_umtx_op` wait or
+    /// mutex contention — Orbis syscall 454). Not a fault condition: the
+    /// session scheduler simply stops running this thread until another
+    /// thread wakes it; the syscall's return value was already written to
+    /// RAX before parking.
+    #[error("thread {tid} parked on umtx obj {obj:#x}")]
+    ThreadParked {
+        /// The parked thread's id.
+        tid: u64,
+        /// The guest address it is waiting on.
+        obj: u64,
+    },
+
+    /// A guest thread called `thr_exit` (Orbis syscall 431). Not a fault
+    /// condition: the session layer removes the thread's interpreter; when
+    /// it was the last one, the process exits.
+    #[error("thread {tid} exit({code})")]
+    ThreadExit {
+        /// The exiting thread's id.
+        tid: u64,
+        /// The exit code the thread reported (PDG's documented model: the
+        /// raw `long` value passed as `thr_exit`'s state argument).
+        code: i64,
+    },
+
     /// The host-side emulation stack failed (emulator bug, not guest-visible).
     #[error("host error: {0}")]
     HostError(String),

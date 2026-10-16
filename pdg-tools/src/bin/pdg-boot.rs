@@ -49,6 +49,15 @@ struct Args {
     #[arg(long, group = "source")]
     demo_kernel: Option<PathBuf>,
 
+    /// Run the Phase-6 runtime demo against this SSD image (created if
+    /// missing): a modular process — main plus its DT_NEEDED PRX closure
+    /// — spawns a thread, contends a umtx mutex with real parking and
+    /// FIFO handoff, reads per-thread TLS through fs:, stats files, and
+    /// dlsyms across modules; the session snapshot/restore proves
+    /// determinism.
+    #[arg(long, group = "source")]
+    demo_runtime: Option<PathBuf>,
+
     /// Load address for --image (hex, 4 KiB-aligned).
     #[arg(long, default_value = "0x100000", value_parser = parse_hex)]
     image_base: u64,
@@ -72,6 +81,7 @@ fn parse_hex(s: &str) -> Result<u64, String> {
 }
 
 fn main() -> anyhow::Result<()> {
+    pdg_core::crash::install_panic_hook();
     let args = Args::parse();
     let level = match args.verbose {
         0 => "warn",
@@ -80,7 +90,7 @@ fn main() -> anyhow::Result<()> {
     };
     pdg_core::logging::init_logging(level);
 
-    println!("PDG boot harness — Phase 5 (kernel: syscalls, ELF, PFS, interrupts)");
+    println!("PDG boot harness — Phase 6 (kernel runtime: modules, threads, snapshots)");
     println!("PDG is an independent emulator. We do not distribute BIOS, firmware, or game files.");
     println!();
 
@@ -92,8 +102,8 @@ fn main() -> anyhow::Result<()> {
         return run_kernel_demo(&ssd_path);
     }
 
-    if let Some(ssd_path) = args.demo_kernel {
-        return run_kernel_demo(&ssd_path);
+    if let Some(ssd_path) = args.demo_runtime {
+        return run_runtime_demo(&ssd_path);
     }
 
     let mut config = PdgConfig::default();
@@ -300,4 +310,80 @@ fn print_report(report: &BootReport) {
         println!("{}", report.console);
         println!("-----------------------");
     }
+}
+
+/// The Phase-6 runtime demo: the modular, multi-threaded process.
+fn run_runtime_demo(ssd_path: &std::path::Path) -> anyhow::Result<()> {
+    use pdg_frontend::kernel_session::{RuntimeOutcome, RuntimeSession};
+
+    let session = RuntimeSession::new(ssd_path)?;
+    let mut config = PdgConfig::default();
+    config.memory.ram_mib = 512;
+    println!("SSD backing:    {}", ssd_path.display());
+    println!(
+        "Process pid:    {:#x}, main + DT_NEEDED closure through the dynlib layer",
+        pdg_kernel::demo::layout6::DEMO_PID
+    );
+    println!();
+    let (report, _) = session.run(None);
+
+    let stages = [
+        "write(2) console probe",
+        "getpid",
+        "dynlib_get_list: main, libpdgx, libpdgy",
+        "dynlib_get_info: name + mapped segments",
+        "dlsym(pdgx_add) + indirect call",
+        "JUMP_SLOT call through the relocated GOT",
+        "GLOB_DAT data + depth-2 dlsym(pdgy_value)",
+        "fstat: the verified 120-byte layout",
+        "stat on the PRX file itself",
+        "thr_self: main is tid 1",
+        "main TLS read through fs:[tpoff]",
+        "thr_create + mutex + WAIT (parks main)",
+        "worker: thr_self == 2",
+        "worker: per-thread TLS bump in the PRX block",
+        "umtx: contention, FIFO handoff, join",
+        "main TLS intact after the worker ran",
+    ];
+    let mut all_ok = true;
+    for (i, (status, stage)) in report.statuses.iter().zip(stages.iter()).enumerate() {
+        let ok = *status == 1;
+        all_ok &= ok;
+        println!(
+            "  [{}] stage {i}: {stage}",
+            if ok { "PASS" } else { "FAIL" }
+        );
+    }
+    println!();
+    match report.outcome {
+        RuntimeOutcome::Exited { code, instructions } => {
+            println!("Process exited({code}) after {instructions} instructions.");
+        }
+        RuntimeOutcome::LastThreadExited { instructions } => {
+            println!("Last thread exited after {instructions} instructions.");
+        }
+        RuntimeOutcome::Halted { instructions } => {
+            println!("Process halted (no exit call) after {instructions} instructions.");
+        }
+        RuntimeOutcome::Fault(f) => println!("Guest fault: {f}"),
+        RuntimeOutcome::BudgetExhausted => println!("Instruction budget exhausted."),
+    }
+    println!(
+        "Syscalls dispatched: {}   Modules loaded: {}   Relocations applied: {}",
+        report.syscalls, report.modules, report.relocations
+    );
+    println!(
+        "Threads materialized: {}   Live at end: {}",
+        report.threads_created, report.threads
+    );
+    if !report.console.is_empty() {
+        println!();
+        println!("---- guest console ----");
+        print!("{}", report.console);
+        println!("-----------------------");
+    }
+    if !all_ok {
+        std::process::exit(2);
+    }
+    Ok(())
 }

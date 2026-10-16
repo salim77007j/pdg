@@ -15,6 +15,7 @@ pdg-cpu.workspace = true
 pdg-io.workspace = true
 pdg-memory.workspace = true
 iced-x86.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
