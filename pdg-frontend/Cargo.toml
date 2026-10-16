@@ -12,6 +12,10 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+pdg-audio.workspace = true
+pdg-cpu.workspace = true
+pdg-io.workspace = true
+pdg-memory.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

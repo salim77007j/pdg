@@ -1,13 +1,40 @@
 //! # pdg-audio
 //!
-//! Audio subsystem for the PDG PlayStation 5 emulator.
+//! Audio subsystem for the PDG PlayStation 5 emulator — the Tempest-shaped
+//! mix path, Phase 4 edition.
 //!
 //! The PS5's Tempest Engine is a dedicated DSP; emulators generally HLE the
 //! guest audio APIs instead of LLE-ing that hardware, and PDG follows that
-//! strategy. Phase 1 defines the [`AudioBackend`] sink; the cpal output and
-//! the HRTF pipeline land in Phase 4.
+//! strategy. The stack:
+//!
+//! * [`mixer`] — voice hydration, spatialization (distance attenuation +
+//!   constant-power pan), saturating master mix. A real HRTF needs a
+//!   licensed/verified HRIR dataset; the pan-law spatializer is what ships
+//!   now, honestly labeled.
+//! * [`resample`] — linear resampler with cross-block phase carry.
+//! * [`device`] — the guest-visible MMIO window: PCM blocks hydrated into
+//!   voices through doorbell-style latches, rendered to any
+//!   [`AudioBackend`] when the host services the device.
+//! * [`cpal_be`] — the host output stream (feature `backend-cpal`).
+//!
+//! Phase 1's [`AudioBackend`] sink and the honest [`NullAudioBackend`]
+//! remain the contract every backend implements.
 
 use thiserror::Error;
+
+pub mod device;
+pub mod mixer;
+pub mod resample;
+
+#[cfg(feature = "backend-cpal")]
+pub mod cpal_be;
+
+pub use device::{AudioDevice, audio_regs};
+pub use mixer::{AudioMixer, SpatialParams};
+pub use resample::LinearResampler;
+
+#[cfg(feature = "backend-cpal")]
+pub use cpal_be::CpalBackend;
 
 /// Errors raised by audio backends.
 #[derive(Debug, Error)]
@@ -34,7 +61,7 @@ pub trait AudioBackend: Send {
     fn write_samples(&mut self, samples: &[i16]) -> Result<(), AudioError>;
 }
 
-/// Null sink used until the cpal backend exists. Counts samples and drops
+/// Null sink used where no host audio exists. Counts samples and drops
 /// them — explicitly a placeholder, never silently "playing" audio.
 #[derive(Debug, Default)]
 pub struct NullAudioBackend {

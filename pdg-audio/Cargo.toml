@@ -1,6 +1,6 @@
 [package]
 name = "pdg-audio"
-description = "PDG audio subsystem: Tempest output abstraction (cpal backend lands in Phase 4)"
+description = "PDG audio subsystem: Tempest-shaped mixer, spatializer, resampler, guest MMIO device, cpal output"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,5 +11,15 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+pdg-memory.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[features]
+# Host output stream via cpal (needs ALSA headers on Linux, WASAPI on
+# Windows). Off by default so headless/CI builds stay dependency-light.
+backend-cpal = ["dep:cpal"]
+
+[dependencies.cpal]
+version = "0.15"
+optional = true

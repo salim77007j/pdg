@@ -13,7 +13,9 @@ workspace = true
 [dependencies]
 pdg-core.workspace = true
 pdg-cpu.workspace = true
+pdg-frontend.workspace = true
 pdg-gpu.workspace = true
+pdg-io.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true

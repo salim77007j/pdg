@@ -13,6 +13,9 @@ workspace = true
 [dependencies]
 pdg-core.workspace = true
 pdg-cpu.workspace = true
+pdg-io.workspace = true
+pdg-audio.workspace = true
+pdg-frontend.workspace = true
 pdg-jit.workspace = true
 pdg-kernel.workspace = true
 pdg-memory.workspace = true

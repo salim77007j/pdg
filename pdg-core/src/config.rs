@@ -19,6 +19,10 @@ pub struct PdgConfig {
     pub boot: BootConfig,
     /// GPU backend selection.
     pub gpu: GpuConfig,
+    /// Storage settings (Phase 4).
+    pub storage: StorageConfig,
+    /// Input settings (Phase 4).
+    pub input: InputConfig,
     /// Audio settings.
     pub audio: AudioConfig,
 }
@@ -127,6 +131,44 @@ impl Default for GpuConfig {
     }
 }
 
+/// Storage settings (the Phase-4 NVMe SSD model).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// Host file backing the SSD (created if missing). Empty = no SSD.
+    pub ssd_path: String,
+    /// Backing-file size in MiB when created.
+    pub ssd_size_mib: u32,
+    /// Guest-physical MMIO base of the NVMe register window.
+    pub ssd_mmio_base: u64,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            ssd_path: String::new(),
+            ssd_size_mib: 8192,
+            ssd_mmio_base: 0xE000_0000,
+        }
+    }
+}
+
+/// Input settings (the Phase-4 DualSense window).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputConfig {
+    /// Guest-physical MMIO base of the pad window.
+    pub pad_mmio_base: u64,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self {
+            pad_mmio_base: 0xE100_0000,
+        }
+    }
+}
+
 /// Host graphics API preference. The wgpu backend (Phase 3) resolves `Auto`
 /// per platform: Vulkan on Linux/Windows desktop, Metal on macOS, DX12 as
 /// fallback.
@@ -157,6 +199,8 @@ pub struct AudioConfig {
     pub sample_rate: u32,
     /// Output channel count.
     pub channels: u8,
+    /// Guest-physical MMIO base of the audio window.
+    pub mmio_base: u64,
 }
 
 impl Default for AudioConfig {
@@ -164,6 +208,7 @@ impl Default for AudioConfig {
         Self {
             sample_rate: 48_000,
             channels: 2,
+            mmio_base: 0xE200_0000,
         }
     }
 }
@@ -243,6 +288,31 @@ impl PdgConfig {
                 m.ipi_mmio_base
             );
         }
+        // Phase-4 I/O windows: aligned, above RAM, on distinct pages.
+        for (name, base) in [
+            ("storage.ssd_mmio_base", self.storage.ssd_mmio_base),
+            ("input.pad_mmio_base", self.input.pad_mmio_base),
+            ("audio.mmio_base", self.audio.mmio_base),
+        ] {
+            if base & 0xFFF != 0 {
+                anyhow::bail!("{name} ({base:#x}) must be 4 KiB-aligned");
+            }
+            if base <= ram {
+                anyhow::bail!("{name} ({base:#x}) must sit above RAM ({ram:#x}) to avoid aliasing");
+            }
+        }
+        let io_bases = [
+            ("storage.ssd_mmio_base", self.storage.ssd_mmio_base),
+            ("input.pad_mmio_base", self.input.pad_mmio_base),
+            ("audio.mmio_base", self.audio.mmio_base),
+        ];
+        for (i, (name_a, a)) in io_bases.iter().enumerate() {
+            for (name_b, b) in io_bases.iter().skip(i + 1) {
+                if a >> 12 == b >> 12 {
+                    anyhow::bail!("{name_a} and {name_b} must not share a 4 KiB page");
+                }
+            }
+        }
         if self.cpu.threads < self.cpu.cores {
             anyhow::bail!(
                 "cpu.threads ({}) must be >= cpu.cores ({})",
@@ -300,5 +370,27 @@ mod tests {
         let cfg =
             PdgConfig::load_or_default(std::path::Path::new("/nonexistent/pdg.toml")).unwrap();
         assert_eq!(cfg, PdgConfig::default());
+    }
+
+    #[test]
+    fn phase4_io_windows_validate() {
+        let mut cfg = PdgConfig::default();
+        // Default I/O windows are valid.
+        cfg.validate().unwrap();
+        // Below RAM is refused.
+        cfg.storage.ssd_mmio_base = 0x1000;
+        assert!(cfg.validate().is_err());
+        // Unaligned is refused.
+        let mut cfg = PdgConfig::default();
+        cfg.audio.mmio_base = 0xE200_0800;
+        assert!(cfg.validate().is_err());
+        // Two devices sharing a page is refused.
+        let mut cfg = PdgConfig::default();
+        cfg.input.pad_mmio_base = cfg.storage.ssd_mmio_base;
+        assert!(cfg.validate().is_err());
+        // Overriding from TOML round-trips.
+        let cfg = PdgConfig::from_toml_str("[storage]\nssd_path = '/tmp/disk.img'\n").unwrap();
+        assert_eq!(cfg.storage.ssd_path, "/tmp/disk.img");
+        assert_eq!(cfg.storage.ssd_mmio_base, 0xE000_0000);
     }
 }

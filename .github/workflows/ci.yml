@@ -43,6 +43,25 @@ jobs:
       - name: Build (release)
         run: cargo build --release --workspace
 
+  # Phase 4: run the GPU end-to-end tier on lavapipe (software Vulkan)
+  # so the pixel-verified render test executes in CI, not just on
+  # machines with hardware adapters.
+  gpu-e2e:
+    name: GPU end-to-end (lavapipe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+      - name: Pixel-verified GPU tests
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: cargo test -p pdg-tests --test gpu -- --nocapture
+
   coverage:
     name: Coverage (llvm-cov)
     runs-on: ubuntu-latest

@@ -39,6 +39,20 @@ pub enum Event {
         /// Vector delivered.
         vector: u8,
     },
+    /// A storage I/O completed through the NVMe model (Phase 4).
+    BlockIo {
+        /// True for WRITE, false for READ.
+        write: bool,
+        /// First LBA of the transfer.
+        lba: u64,
+        /// Blocks transferred.
+        blocks: u32,
+    },
+    /// The guest hydrated an audio block into the mixer (Phase 4).
+    AudioHydrated {
+        /// Samples hydrated.
+        samples: u32,
+    },
 }
 
 /// Broadcast bus. Subscribers receive a copy of every published event.

@@ -2,10 +2,14 @@
 //!
 //! Launcher frontend for the PDG PlayStation 5 emulator.
 //!
-//! Phase 1 ships the *model* only: [`LibraryEntry`] and
-//! [`scan_game_library`], which enumerate a directory of user-owned dumps.
+//! Phase 1 shipped the *model*: [`LibraryEntry`] and [`scan_game_library`]
+//! enumerate a directory of user-owned dumps. Phase 4 adds
+//! [`io_session`]: the end-to-end I/O machine (NVMe SSD + DualSense +
+//! Tempest-shaped audio) the demo driver and `pdg-boot --demo-io` run.
 //! The GUI (egui-based: game grid, metadata, settings, BIOS picker, save
 //! states) is Phase 6 work and replaces [`HeadlessLauncher`]'s text output.
+
+pub mod io_session;
 
 use std::path::{Path, PathBuf};
 
