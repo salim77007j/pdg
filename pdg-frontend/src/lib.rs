@@ -5,11 +5,15 @@
 //! Phase 1 shipped the *model*: [`LibraryEntry`] and [`scan_game_library`]
 //! enumerate a directory of user-owned dumps. Phase 4 adds
 //! [`io_session`]: the end-to-end I/O machine (NVMe SSD + DualSense +
-//! Tempest-shaped audio) the demo driver and `pdg-boot --demo-io` run.
+//! Tempest-shaped audio). Phase 5 adds [`kernel_session`]: the process
+//! machine (ELF loading, Orbis syscalls, read-only PFS, kernel objects,
+//! MSI-X-shaped interrupts) the demo program and `pdg-boot --demo-kernel`
+//! run.
 //! The GUI (egui-based: game grid, metadata, settings, BIOS picker, save
 //! states) is Phase 6 work and replaces [`HeadlessLauncher`]'s text output.
 
 pub mod io_session;
+pub mod kernel_session;
 
 use std::path::{Path, PathBuf};
 

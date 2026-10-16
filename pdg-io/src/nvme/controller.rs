@@ -95,6 +95,11 @@ struct Inner<D: BlockDevice> {
 /// The NVMe-shaped SSD controller.
 pub struct NvmeController<D: BlockDevice> {
     inner: Mutex<Inner<D>>,
+    /// Optional host hook invoked (outside the device lock) after a pump
+    /// posts completions — the seam the kernel's MSI-X-shaped interrupt
+    /// plumbing attaches to (Phase 5).
+    #[allow(clippy::type_complexity)] // the callback shape is the API
+    completion_hook: Mutex<Option<Arc<dyn Fn(u64) + Send + Sync>>>,
 }
 
 impl<D: BlockDevice> NvmeController<D> {
@@ -115,6 +120,7 @@ impl<D: BlockDevice> NvmeController<D> {
                 lba_count: len / super::LBA_SIZE,
                 stats: NvmeStats::default(),
             }),
+            completion_hook: Mutex::new(None),
         }
     }
 
@@ -132,6 +138,17 @@ impl<D: BlockDevice> NvmeController<D> {
     /// Namespace size in 512-byte blocks.
     pub fn lba_count(&self) -> u64 {
         self.inner.lock().expect("nvme lock poisoned").lba_count
+    }
+
+    /// Install the host hook fired (outside the device lock) after a pump
+    /// posts at least one completion; the argument is the completion
+    /// count of that pump pass. The kernel's interrupt plumbing uses this
+    /// to raise the device's vector.
+    pub fn set_completion_hook(&self, hook: Arc<dyn Fn(u64) + Send + Sync>) {
+        *self
+            .completion_hook
+            .lock()
+            .expect("nvme hook lock poisoned") = Some(hook);
     }
 
     /// Execute everything latched by doorbell writes since the last
@@ -184,6 +201,17 @@ impl<D: BlockDevice> NvmeController<D> {
                 q.sq_head = (q.sq_head + 1) % q.sq_size;
                 inner.stats.completions += 1;
                 posted += 1;
+            }
+        }
+        drop(inner);
+        if posted > 0 {
+            let hook = self
+                .completion_hook
+                .lock()
+                .expect("nvme hook lock poisoned")
+                .clone();
+            if let Some(fire) = hook {
+                fire(posted);
             }
         }
         posted

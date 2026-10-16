@@ -44,6 +44,17 @@ pub enum Fault {
         rip: u64,
     },
 
+    /// The guest process called `exit` (Orbis syscall 1). This is not a
+    /// fault condition: the kernel HLE layer asks the core to stop cleanly
+    /// with the process exit code. `run` reports it through
+    /// [`RunOutcome::Fault`](crate::RunOutcome::Fault) and the session layer
+    /// maps it to an "exited" outcome.
+    #[error("process exit({code})")]
+    ProcessExit {
+        /// The exit code passed to `exit`.
+        code: i32,
+    },
+
     /// The host-side emulation stack failed (emulator bug, not guest-visible).
     #[error("host error: {0}")]
     HostError(String),

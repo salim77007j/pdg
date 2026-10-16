@@ -27,7 +27,7 @@ Emulators are legal tools (established precedent: *Sony v. Connectix*, 2000; *So
 
 If you do not own a PS5 and the games you dump, you may not use PDG to run them. piracy is neither endorsed nor assisted here.
 
-## Status: Phase 4 of 6 (I/O)
+## Status: Phase 5 of 6 (Kernel)
 
 | Phase | Scope | Status |
 |-------|-------|--------|
@@ -35,10 +35,10 @@ If you do not own a PS5 and the games you dump, you may not use PDG to run them.
 | 2 | CPU: full integer ISA, SSE→AVX2 SIMD, cranelift JIT, SMP (8 cores/16 threads) | ✅ **complete** |
 | 3 | GPU: PM4 command processor, GCN/RDNA shader recompilation to WGSL, wgpu backend, GNM ring | ✅ **complete** |
 | 4 | I/O: NVMe-shaped SSD model, DualSense input, Tempest-shaped audio, I/O session | ✅ **complete** |
-| 5 | Kernel: Orbis syscall translation, ELF/PRX loader, PFS | ⬜ |
+| 5 | Kernel: Orbis syscall translation, ELF/SELF loader, read-only PFS, kernel objects, MSI-X-shaped interrupts | ✅ **complete** |
 | 6 | Frontend: launcher GUI, optimization, release engineering | ⬜ |
 
-**PDG cannot run commercial PS5 games yet.** Phase 4 delivers the I/O stack — a doorbell-driven NVMe 2.0-shaped SSD controller with PRP DMA into guest RAM, the DualSense model with adaptive-trigger physics and a seqlocked MMIO window, and the Tempest-shaped mixer with a guest-visible audio hydrate path — verified by an emulated CPU driving the whole plane end to end; see [PHASE_4_REPORT.md](PHASE_4_REPORT.md) for an honest, detailed account of exactly what works and what does not.
+**PDG cannot run commercial PS5 games yet.** Phase 5 delivers the kernel plane: a real ELF64 process boots through a loader that maps segments with per-page permissions and applies RELATIVE/TPOFF64 relocations; it calls Orbis syscalls (verified FreeBSD-9.2-derived numbers) for console output, read-only-PFS file I/O with `getdirentries`, anonymous `mmap`/`mprotect`/`munmap`, and `kqueue`/`kevent` event queues; it installs its own IDT, programs an MSI-X-shaped vector, and receives NVMe completions as interrupts delivered through that IDT — see [PHASE_5_REPORT.md](PHASE_5_REPORT.md) for an honest, detailed account of exactly what works and what does not.
 
 ### What genuinely works today
 
@@ -53,8 +53,13 @@ If you do not own a PS5 and the games you dump, you may not use PDG to run them.
 - **Input (Phase 4)** — the DualSense model: full state (buttons, dpad hat, sticks, analog triggers, two touch points, gyro/accel, battery), adaptive-trigger effects modeled by *behavior* (`resistance_at(pull, t)` per mode: feedback, weapon, vibration), a seqlock-shaped guest MMIO window, host mapping with deadzones, and HID report 0x01 encoding for the verified subset (touch/motion extensions deliberately not serialized until a real transport verifies their offsets).
 - **Audio (Phase 4)** — the Tempest-shaped mix path: voice hydration, distance attenuation with constant-power panning, saturating master mix, a linear resampler with cross-block phase carry, and the guest-visible audio window (PCM blocks hydrated through MMIO, rendered to any `AudioBackend`); a cpal output stream sits behind the `backend-cpal` feature. HRTF needs a verified HRIR dataset and is honestly not faked.
 - **I/O sessions** — `pdg-boot --demo-io <ssd.img>` boots a hand-assembled guest driver that enables the SSD, identifies it, creates I/O queues, writes and reads a sector through PRP DMA, reads the pad window, hydrates an audio block, and prints `PHASE4 IO OK` — the emulated CPU in the driver's seat across the whole I/O plane.
+- **Kernel sessions (Phase 5)** — `pdg-boot --demo-kernel <ssd.img>` builds a real ELF64 (typed emitters, disassembler-verified instruction set), loads it through the loader, and runs it: the process writes to the console through `write(2)`, opens and reads files from a mounted read-only PFS, walks directories with `getdirentries`, manages anonymous memory with `mmap`/`mprotect`/`munmap`, registers on and drains a `kqueue`, reads relocated pointers and TLS through `fs:` addressing, then installs an IDT, programs an MSI-X vector, doorbells an NVMe write — and the completion arrives as an interrupt through that IDT; the handler runs, `iretq`s, and the driver reads the sector back and byte-compares it. Then it prints `PHASE5 KERNEL OK` and calls `exit(0)`.
 - **Boot harness** — `pdg-boot --bios <your-dump>` loads your legally-dumped firmware into the ROM window and starts executing at the reset vector `0xFFFF_FFF0` through the entire stack.
-- **Cross-cutting** — layered TOML configuration, `tracing` logging, event bus, virtual clock + scheduler, **271 tests** (unit, integration, differential fuzz, SMP, GPU end-to-end, CPU-driven I/O), criterion benchmarks, CI on Linux and Windows (plus a lavapipe job for the pixel-verified GPU tier).
+- **Kernel syscall layer (Phase 5)** — the Orbis table with numbers verified against FreeBSD 9.2's public `syscalls.master` (the PS4/PS5 kernel's documented base) and the public Sony 588+ block: `exit`, `read`, `write`, `open`, `close`, `getpid`, `munmap`, `mprotect`, `getdirentries`, `kqueue`, `kevent`, `mmap`, `lseek` — implemented over the console, the read-only PFS, the process address space and the kernel object table; the Sony block is logged by name and refused with `ENOSYS`, never guessed. The raw FreeBSD return convention (CF + errno) is honored.
+- **Process loading (Phase 5)** — a genuine ELF64 loader: per-segment page permissions, zero-filled tails, `R_X86_64_RELATIVE` / `R_X86_64_TPOFF64` relocations through a supervisor write path (segment data lands in RX pages the way real kernels do), TLS with a documented FS-base model, and symbol relocations through a resolver. The SELF container is parsed per its publicly documented layout and unwrapped — plain (`flags == 0`) entries only; encryption/compression bits are refused with the exact value, not decoded from conflicting public documentation.
+- **PFS (Phase 5)** — the read-only PlayStation filesystem over a block device, implemented from the public on-disk layout (cross-checked against two independent public readers): superblock, inode blocks, dirents, contiguous/direct/first-indirect block maps. Signed (36-byte) and encrypted images are refused precisely. A builder produces images in the same layout for tests and the demo.
+- **Kernel objects + interrupts (Phase 5)** — event flags, recursive owner-tracked mutexes, counting semaphores and kqueue-shaped event queues behind a handle-checked table; and MSI-X-shaped interrupt plumbing: a guest-programmable vector table (public entry layout, `0xFEE00000` message-address convention) whose latched vector is delivered through the guest IDT at instruction boundaries — the same `deliver_exception` path `#PF` uses.
+- **Cross-cutting** — layered TOML configuration, `tracing` logging, event bus, virtual clock + scheduler, **319 tests** (unit, integration, differential fuzz, SMP, GPU end-to-end, CPU-driven I/O and kernel sessions), criterion benchmarks, CI on Linux and Windows (plus a lavapipe job for the pixel-verified GPU tier).
 
 ## Quick start
 
@@ -73,6 +78,10 @@ cargo run --release --bin pdg-boot -- --bios /path/to/your/dump.bios
 
 # Phase-4 I/O demo: the emulated CPU drives the SSD, pad and audio
 cargo run --release --bin pdg-boot -- --demo-io ./ssd.img
+
+# Phase-5 kernel demo: a real ELF64 process boots, calls Orbis syscalls,
+# reads the PFS, and takes NVMe completions through its own IDT
+cargo run --release --bin pdg-boot -- --demo-kernel ./ssd.img
 
 # Tests / lints / benchmarks
 cargo test --workspace
@@ -111,17 +120,20 @@ pdg/
 │                  # host block devices, the Phase-4 demo payload
 ├── pdg-audio/     # Tempest-shaped mixer, spatializer, resampler, audio MMIO,
 │                  # cpal backend (feature)
-├── pdg-kernel/    # HLE syscall dispatch framework, exception vectors
-├── pdg-frontend/  # Game library model, the Phase-4 I/O session (GUI in Phase 6)
-├── pdg-tests/     # Cross-crate integration tests (boot, SMP, GPU, I/O)
-└── pdg-tools/     # pdg-boot (boot harness + I/O demo), pdg-disasm, pdg-wgsldump
+├── pdg-kernel/    # Orbis syscall layer, ELF64/SELF loader, read-only PFS,
+│                  # kernel objects, MSI-X-shaped interrupts, VM manager,
+│                  # the Phase-5 demo ELF
+├── pdg-frontend/  # Game library model, the Phase-4 I/O session, the Phase-5
+│                  # kernel session (GUI in Phase 6)
+├── pdg-tests/     # Cross-crate integration tests (boot, SMP, GPU, I/O, kernel)
+└── pdg-tools/     # pdg-boot (boot harness + I/O/kernel demos), pdg-disasm, pdg-wgsldump
 ```
 
 Architecture deep-dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Technology
 
-Rust (edition 2024) · iced-x86 (decoding) · cranelift (JIT codegen, since Phase 2) · wgpu + naga + rspirv + sha2 (GPU, since Phase 3) · memmap2 (guest RAM) · tokio (async I/O) · serde + toml (config) · tracing (logging) · criterion + proptest (QA). Rationale for every choice lives in the phase reports.
+Rust (edition 2024) · iced-x86 (decoding) · cranelift (JIT codegen, since Phase 2) · wgpu + naga + rspirv + sha2 (GPU, since Phase 3) · memmap2 (guest RAM) · tokio (async I/O) · serde + toml (config) · tracing (logging) · criterion + proptest (QA). Rationale for every choice lives in the phase reports. Phase 5 added **no new dependencies** — the kernel layer needed nothing beyond the existing stack.
 
 ## Contributing
 

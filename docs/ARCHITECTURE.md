@@ -202,12 +202,44 @@ guest-issued fences and semaphores.
 Orbis OS is FreeBSD-derived. Strategy: **HLE** — translate syscalls, not
 emulate kernel binaries. The Phase-1 `SyscallDispatcher` is a registry with
 the FreeBSD-style ABI (number in RAX, args in RDI/RSI/RDX/R10/R8/R9,
-result in RAX). The Orbis syscall numbering table is populated in Phase 5
-strictly from public homebrew research; nothing is guessed.
+result in RAX).
 
-Also in Phase 5: the SELF/ELF loader (user-decrypted), dynamic linking of
-`.prx`/`.so` modules, TLS, the PFS container layer (with user-provided
-keys), and the boot chain BIOS → kernel HLE → game executable.
+Phase 5 delivered the kernel plane:
+
+- **`orbis`** — the Orbis syscall layer: numbers verified against the
+  FreeBSD 9.2 `syscalls.master` (the console kernel's documented base)
+  plus the public Sony 588+ name table. Thirteen syscalls implemented
+  (console + read-only-PFS file I/O with `getdirentries`, anonymous
+  `mmap`/`mprotect`/`munmap`, `kqueue`/`kevent`, `exit`, `getpid`,
+  `lseek`); everything else — implemented or unknown — is refused with
+  `ENOSYS` and logged by name. The raw FreeBSD return convention
+  (CF + errno) is honored.
+- **`vm`** — the process address space: per-process page tables behind a
+  shared MMU, tracked regions, an identity-mapped DMA window (devices
+  speak physical; processes speak virtual), and the `ProcessMemory`
+  port the interpreter runs against.
+- **`loader`** — genuine ELF64 loading (per-segment permissions,
+  `RELATIVE`/`TPOFF64` relocations through a supervisor write path,
+  TLS with a documented FS-base model) and the SELF container unwrap
+  (public layout; plain `flags == 0` entries only — the bit meanings
+  are not consistently documented, so nonzero values are refused with
+  the exact number).
+- **`pfs`** — the read-only PlayStation filesystem over a block device,
+  from the public on-disk layout (superblock, inodes, dirents,
+  contiguous/direct/first-indirect block maps); signed and encrypted
+  images refused precisely; a deterministic builder produces images in
+  the same layout.
+- **`objects`** — event flags, recursive mutexes, semaphores and
+  kqueue-shaped equeues behind a handle-checked table (the substrate
+  the Phase-6 NID layer binds `sceKernel*` onto).
+- **`msix`** — the MSI-X-shaped vector table (public entry layout) and
+  delivery through the guest IDT at instruction boundaries via
+  `Interpreter::inject_interrupt` — the same architectural path as
+  `#PF` delivery.
+
+The dynlib/PRX module layer, NID resolution, threads and the `stat`
+family remain Phase-6 work; see PHASE_5_REPORT.md for the honest gap
+list.
 
 ## 7. I/O subsystem (`pdg-io`)
 

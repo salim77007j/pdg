@@ -99,6 +99,14 @@ impl<'a> PageTableBuilder<'a> {
         frame
     }
 
+    /// Next intermediate-table frame this builder would allocate. Callers
+    /// that continue allocating guest-physical frames after a builder run
+    /// (process loaders, the kernel layer) resume from here without
+    /// colliding with the tables this builder created.
+    pub fn next_frame(&self) -> u64 {
+        self.next_frame
+    }
+
     /// Ensure `table[index]` points at a present table; returns its frame.
     fn ensure_table(&mut self, table_base: u64, index: u64) -> Result<u64, MemoryError> {
         let slot = table_base + index * 8;

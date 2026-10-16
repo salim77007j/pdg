@@ -1575,6 +1575,7 @@ dependencies = [
  "pdg-audio",
  "pdg-cpu",
  "pdg-io",
+ "pdg-kernel",
  "pdg-memory",
  "tempfile",
  "tracing",
@@ -1627,6 +1628,8 @@ version = "0.1.0"
 dependencies = [
  "iced-x86",
  "pdg-cpu",
+ "pdg-io",
+ "pdg-memory",
  "proptest",
  "thiserror 2.0.21",
  "tracing",
@@ -1671,6 +1674,7 @@ dependencies = [
  "pdg-frontend",
  "pdg-gpu",
  "pdg-io",
+ "pdg-kernel",
  "tracing",
 ]
 

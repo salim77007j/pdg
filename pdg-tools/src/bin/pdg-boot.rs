@@ -22,7 +22,7 @@ use pdg_cpu::RunOutcome;
 #[command(
     name = "pdg-boot",
     version,
-    about = "PDG boot harness — run a raw boot image, your legally-dumped PS5 BIOS, or the Phase-4 I/O demo",
+    about = "PDG boot harness — run a raw boot image, your legally-dumped PS5 BIOS, the Phase-4 I/O demo, or the Phase-5 kernel demo",
     after_help = "PDG is an independent emulator. It does not distribute BIOS, firmware, or game files. Users must provide their own legally-dumped system files."
 )]
 struct Args {
@@ -40,6 +40,14 @@ struct Args {
     /// and the audio hydrate path end to end.
     #[arg(long, group = "source")]
     demo_io: Option<PathBuf>,
+
+    /// Run the Phase-5 kernel demo against this SSD image (created if
+    /// missing): a real ELF64 process boots through the loader, calls
+    /// Orbis syscalls (console, PFS files, mmap, event queues), and
+    /// receives NVMe completions through guest-programmed MSI-X
+    /// interrupts delivered via its own IDT.
+    #[arg(long, group = "source")]
+    demo_kernel: Option<PathBuf>,
 
     /// Load address for --image (hex, 4 KiB-aligned).
     #[arg(long, default_value = "0x100000", value_parser = parse_hex)]
@@ -72,12 +80,20 @@ fn main() -> anyhow::Result<()> {
     };
     pdg_core::logging::init_logging(level);
 
-    println!("PDG boot harness — Phase 4 (I/O: storage, input, audio)");
+    println!("PDG boot harness — Phase 5 (kernel: syscalls, ELF, PFS, interrupts)");
     println!("PDG is an independent emulator. We do not distribute BIOS, firmware, or game files.");
     println!();
 
     if let Some(ssd_path) = args.demo_io {
         return run_io_demo(&ssd_path);
+    }
+
+    if let Some(ssd_path) = args.demo_kernel {
+        return run_kernel_demo(&ssd_path);
+    }
+
+    if let Some(ssd_path) = args.demo_kernel {
+        return run_kernel_demo(&ssd_path);
     }
 
     let mut config = PdgConfig::default();
@@ -101,8 +117,8 @@ fn main() -> anyhow::Result<()> {
         (None, None) => {
             anyhow::bail!(
                 "no boot source given — pass --bios <path> with your legally-dumped PS5 firmware, \
-                 --image <path> with a raw boot image, or --demo-io <ssd.img> for the built-in \
-                 Phase-4 I/O demo"
+                 --image <path> with a raw boot image, --demo-io <ssd.img> for the built-in \
+                 Phase-4 I/O demo, or --demo-kernel <ssd.img> for the Phase-5 kernel demo"
             );
         }
     };
@@ -179,6 +195,85 @@ fn run_io_demo(ssd_path: &std::path::Path) -> anyhow::Result<()> {
         println!();
         println!("---- guest console ----");
         println!("{}", report.console);
+        println!("-----------------------");
+    }
+    if !all_ok {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// Run the Phase-5 kernel demo end to end and report honestly.
+fn run_kernel_demo(ssd_path: &std::path::Path) -> anyhow::Result<()> {
+    use pdg_frontend::kernel_session::{KernelOutcome, KernelSession};
+    use pdg_kernel::demo::layout;
+
+    let session = KernelSession::new(ssd_path)?;
+    println!(
+        "Kernel session: ELF64 loader → Orbis syscalls → {{console, PFS, mmap, kqueue}} + NVMe over MSI-X"
+    );
+    println!("SSD backing:    {}", ssd_path.display());
+    println!(
+        "Process pid:    {:#x}, entry through the interpreter, 200-instruction slices",
+        layout::DEMO_PID
+    );
+    println!();
+    let report = session.run();
+
+    let stages = [
+        "write(2) to the console through the syscall layer",
+        "getpid",
+        "open(\"/app/data.txt\") through the PFS",
+        "read(2) + contents byte-compare",
+        "lseek(SEEK_END / SEEK_SET)",
+        "close(2)",
+        "getdirentries: FreeBSD dirent stream over the PFS",
+        "mmap anonymous + pattern roundtrip",
+        "mprotect R → RW → R",
+        "munmap (page really gone)",
+        "kqueue + kevent: register, host trigger, drain",
+        "R_X86_64_RELATIVE relocation applied",
+        "R_X86_64_TPOFF64 + fs: TLS addressing",
+        "LIDT + STI + MSI-X + NVMe WRITE/READ through the interrupt",
+    ];
+    let mut all_ok = true;
+    for (i, (status, stage)) in report.statuses.iter().zip(stages.iter()).enumerate() {
+        let ok = *status == 1;
+        all_ok &= ok;
+        println!(
+            "  [{}] stage {i}: {stage}",
+            if ok { "PASS" } else { "FAIL" }
+        );
+    }
+    println!();
+    match report.outcome {
+        KernelOutcome::Exited { code, instructions } => {
+            println!("Process exited({code}) after {instructions} instructions.");
+        }
+        KernelOutcome::Halted { instructions } => {
+            println!("Process halted (no exit call) after {instructions} instructions.");
+        }
+        KernelOutcome::Fault(f) => println!("Guest fault: {f}"),
+        KernelOutcome::BudgetExhausted => println!("Instruction budget exhausted."),
+    }
+    println!(
+        "Syscalls dispatched: {}   Loader relocations: {}",
+        report.syscalls, report.relocations_applied
+    );
+    println!(
+        "MSI-X interrupt delivered through the guest IDT: {}   equeue event drained: {}",
+        report.interrupt_delivered, report.equeue_event_drained
+    );
+    println!(
+        "SSD stats: {} reads, {} writes ({} bytes moved)",
+        report.ssd_stats.reads + report.ssd_stats.writes,
+        report.ssd_stats.reads + report.ssd_stats.writes,
+        report.ssd_stats.read_bytes + report.ssd_stats.write_bytes
+    );
+    if !report.console.is_empty() {
+        println!();
+        println!("---- guest console ----");
+        print!("{}", report.console);
         println!("-----------------------");
     }
     if !all_ok {

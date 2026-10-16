@@ -15,6 +15,7 @@ anyhow.workspace = true
 pdg-audio.workspace = true
 pdg-cpu.workspace = true
 pdg-io.workspace = true
+pdg-kernel.workspace = true
 pdg-memory.workspace = true
 tracing.workspace = true
 

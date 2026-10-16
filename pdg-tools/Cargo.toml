@@ -14,6 +14,7 @@ workspace = true
 pdg-core.workspace = true
 pdg-cpu.workspace = true
 pdg-frontend.workspace = true
+pdg-kernel.workspace = true
 pdg-gpu.workspace = true
 pdg-io.workspace = true
 anyhow.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "pdg-kernel"
-description = "PDG kernel subsystem: HLE syscall dispatch framework and exception vector constants (Orbis table lands in Phase 5)"
+description = "PDG kernel subsystem: Orbis syscall translation, ELF/SELF loader, read-only PFS, kernel objects, MSI-X-shaped interrupt plumbing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 pdg-cpu.workspace = true
+pdg-io.workspace = true
+pdg-memory.workspace = true
 iced-x86.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

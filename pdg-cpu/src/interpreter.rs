@@ -388,6 +388,26 @@ impl Interpreter {
         }
     }
 
+    /// Deliver an *external* interrupt (device-signalled) through the guest
+    /// IDT, exactly as `#PF`/`#UD` delivery works: push the architectural
+    /// frame, clear IF for interrupt gates, jump to the gate handler. No
+    /// error code is pushed (architectural rule for external interrupts).
+    ///
+    /// The kernel layer calls this from its device pump — at an instruction
+    /// boundary, never inside one — which is the honest single-core model
+    /// of "pending until the next dispatch point". Re-entry is the guest's
+    /// business: `iretq` in the handler restores the interrupted frame.
+    ///
+    /// Returns the fault raised while delivering (bad gate, no IDT, ...),
+    /// if any.
+    pub fn inject_interrupt(
+        &mut self,
+        vector: u8,
+        mem: &mut dyn MemoryAccess,
+    ) -> Result<(), Fault> {
+        self.deliver_exception(vector, 0, false, 0, mem)
+    }
+
     // ----- execution --------------------------------------------------------
 
     fn execute(

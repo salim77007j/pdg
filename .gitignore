@@ -28,3 +28,4 @@ Thumbs.db
 
 # Local (machine-specific) configuration
 /config/local.toml
+worklog.md
