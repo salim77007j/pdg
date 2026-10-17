@@ -56,13 +56,28 @@ If you do not own a PS5 and the games you dump, you may not use PDG to run them.
 - **Kernel sessions (Phase 5)** — `pdg-boot --demo-kernel <ssd.img>` builds a real ELF64 (typed emitters, disassembler-verified instruction set), loads it through the loader, and runs it: the process writes to the console through `write(2)`, opens and reads files from a mounted read-only PFS, walks directories with `getdirentries`, manages anonymous memory with `mmap`/`mprotect`/`munmap`, registers on and drains a `kqueue`, reads relocated pointers and TLS through `fs:` addressing, then installs an IDT, programs an MSI-X vector, doorbells an NVMe write — and the completion arrives as an interrupt through that IDT; the handler runs, `iretq`s, and the driver reads the sector back and byte-compares it. Then it prints `PHASE5 KERNEL OK` and calls `exit(0)`.
 - **Process runtime (Phase 6)** — the dynlib layer: the main executable plus its whole `DT_NEEDED` closure of PRX-shaped shared objects loads through the kernel (`sys_dynlib_load_prx` with the ABI the public payload SDKs pin), cross-module `JUMP_SLOT`/`GLOB_DAT` relocations bind against the others' exports (rtld search order), `dlsym` resolves by name across a two-deep dependency chain, and the module table answers `get_list`/`get_info` with the size-prefixed `OrbisKernelModuleInfo` layout. Threads: `thr_create` parses a genuine FreeBSD 9.2 `ucontext_t`, each thread gets its own copy of the aggregated TLS block (`fs:` addressing is per-thread), and `_umtx_op` parks would-blockers until a wake — the mutex unlock hands the lock FIFO to one waiter. `stat`/`fstat` fill the verified 120-byte FreeBSD 9.2 `struct stat`. The session snapshot format (`PDGS`, SHA-256-checked) captures the whole machine — CPU contexts, sparse nonzero RAM pages, the kernel tables — and restoring it into a fresh machine continues the run to byte-identical final state.
 - **Launcher GUI (Phase 6)** — the egui launcher (`pdg-launcher`, `--features gui`): game library, settings persistence, save-state listing with header metadata, and a run button that streams the guest console into the log panel. The headless model (settings, save-state scanning) is unit-tested without a display.
-- **Crash reporting (Phase 6)** — every binary installs a panic hook that logs the panic with a forced backtrace and writes a `pdg-crash-*.log` file; CI gained a GUI compile-check job and a tag-triggered release job.
+- **Crash reporting (Phase 6)** — every binary installs a panic hook that logs the panic with a forced backtrace and writes a `pdg-crash-*.log` file; CI gained a GUI compile-check job and a tag-triggered release workflow.
 - **Boot harness** — `pdg-boot --bios <your-dump>` loads your legally-dumped firmware into the ROM window and starts executing at the reset vector `0xFFFF_FFF0` through the entire stack.
 - **Kernel syscall layer (Phase 5)** — the Orbis table with numbers verified against FreeBSD 9.2's public `syscalls.master` (the PS4/PS5 kernel's documented base) and the public Sony 588+ block: `exit`, `read`, `write`, `open`, `close`, `getpid`, `munmap`, `mprotect`, `getdirentries`, `kqueue`, `kevent`, `mmap`, `lseek` — implemented over the console, the read-only PFS, the process address space and the kernel object table; the Sony block is logged by name and refused with `ENOSYS`, never guessed. The raw FreeBSD return convention (CF + errno) is honored.
 - **Process loading (Phase 5)** — a genuine ELF64 loader: per-segment page permissions, zero-filled tails, `R_X86_64_RELATIVE` / `R_X86_64_TPOFF64` relocations through a supervisor write path (segment data lands in RX pages the way real kernels do), TLS with a documented FS-base model, and symbol relocations through a resolver. The SELF container is parsed per its publicly documented layout and unwrapped — plain (`flags == 0`) entries only; encryption/compression bits are refused with the exact value, not decoded from conflicting public documentation.
 - **PFS (Phase 5)** — the read-only PlayStation filesystem over a block device, implemented from the public on-disk layout (cross-checked against two independent public readers): superblock, inode blocks, dirents, contiguous/direct/first-indirect block maps. Signed (36-byte) and encrypted images are refused precisely. A builder produces images in the same layout for tests and the demo.
 - **Kernel objects + interrupts (Phase 5)** — event flags, recursive owner-tracked mutexes, counting semaphores and kqueue-shaped event queues behind a handle-checked table; and MSI-X-shaped interrupt plumbing: a guest-programmable vector table (public entry layout, `0xFEE00000` message-address convention) whose latched vector is delivered through the guest IDT at instruction boundaries — the same `deliver_exception` path `#PF` uses.
 - **Cross-cutting** — layered TOML configuration, `tracing` logging, event bus, virtual clock + scheduler, **344 tests** (unit, integration, differential fuzz, SMP, GPU end-to-end, CPU-driven I/O, kernel and runtime sessions, snapshot codecs), criterion benchmarks, CI on Linux and Windows (plus a lavapipe job for the pixel-verified GPU tier).
+
+## Releases (prebuilt binaries)
+
+Pushing a `v*` tag triggers the [release workflow](.github/workflows/release.yml),
+which builds the tool set on **Linux and Windows** runners and publishes them
+on the [Releases page](https://github.com/salim77007j/pdg/releases) with
+SHA-256 checksums:
+
+| Archive | Contents |
+|---------|----------|
+| `pdg-<tag>-linux-x86_64.tar.gz` | `pdg-boot`, `pdg-disasm`, `pdg-wgsldump`, `pdg-launcher` |
+| `pdg-<tag>-windows-x86_64.zip` | the same four tools as `.exe` |
+
+The launcher GUI (`pdg-launcher`) needs a desktop session (X11 on Linux,
+Win32 on Windows); the other three tools are pure command line.
 
 ## Quick start
 

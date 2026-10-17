@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
@@ -26,15 +26,15 @@ categories = ["emulators"]
 
 [workspace.dependencies]
 # Internal crates
-pdg-core = { path = "pdg-core", version = "0.1.0" }
-pdg-cpu = { path = "pdg-cpu", version = "0.1.0" }
-pdg-memory = { path = "pdg-memory", version = "0.1.0" }
-pdg-io = { path = "pdg-io", version = "0.1.0" }
-pdg-audio = { path = "pdg-audio", version = "0.1.0" }
-pdg-kernel = { path = "pdg-kernel", version = "0.1.0" }
-pdg-jit = { path = "pdg-jit", version = "0.1.0" }
-pdg-gpu = { path = "pdg-gpu", version = "0.1.0" }
-pdg-frontend = { path = "pdg-frontend", version = "0.1.0" }
+pdg-core = { path = "pdg-core", version = "0.6.0" }
+pdg-cpu = { path = "pdg-cpu", version = "0.6.0" }
+pdg-memory = { path = "pdg-memory", version = "0.6.0" }
+pdg-io = { path = "pdg-io", version = "0.6.0" }
+pdg-audio = { path = "pdg-audio", version = "0.6.0" }
+pdg-kernel = { path = "pdg-kernel", version = "0.6.0" }
+pdg-jit = { path = "pdg-jit", version = "0.6.0" }
+pdg-gpu = { path = "pdg-gpu", version = "0.6.0" }
+pdg-frontend = { path = "pdg-frontend", version = "0.6.0" }
 
 # Third-party crates (see PHASE_1_REPORT.md for rationale)
 anyhow = "1"

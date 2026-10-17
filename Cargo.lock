@@ -2530,7 +2530,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pdg-audio"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "cpal",
  "pdg-memory",
@@ -2540,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-core"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "pdg-cpu",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-cpu"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "aes",
  "criterion",
@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-frontend"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-gpu"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "naga 27.0.3",
  "pdg-memory",
@@ -2600,7 +2600,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-io"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "pdg-memory",
  "tempfile",
@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-jit"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-kernel"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "iced-x86",
  "pdg-cpu",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-memory"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "bitflags 2.13.2",
  "criterion",
@@ -2652,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-tests"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "pdg-audio",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "pdg-tools"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
